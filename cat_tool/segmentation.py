@@ -1,170 +1,350 @@
 import re
+import json
+import os
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QLineEdit, QPushButton, QWidget, QCheckBox, QHeaderView,
+    QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+    QLineEdit, QPushButton, QWidget, QCheckBox, QComboBox, QLabel,
+    QGroupBox, QSplitter, QMessageBox,
 )
 from PyQt5.QtCore import Qt
 
+LANGUAGES = [
+    "All", "English", "Spanish", "French", "German", "Italian",
+    "Portuguese", "Dutch", "Russian", "Arabic", "Chinese", "Japanese",
+    "Korean", "Turkish", "Polish", "Swedish", "Danish", "Norwegian",
+    "Finnish", "Greek", "Hebrew", "Hindi", "Thai", "Vietnamese",
+    "Czech", "Slovak", "Hungarian", "Romanian", "Bulgarian", "Ukrainian",
+]
+
+LANG_NAME_TO_CODE = {
+    "All": "all", "English": "en", "Spanish": "es", "French": "fr",
+    "German": "de", "Italian": "it", "Portuguese": "pt", "Dutch": "nl",
+    "Russian": "ru", "Arabic": "ar", "Chinese": "zh", "Japanese": "ja",
+    "Korean": "ko", "Turkish": "tr", "Polish": "pl", "Swedish": "sv",
+    "Danish": "da", "Norwegian": "no", "Finnish": "fi", "Greek": "el",
+    "Hebrew": "he", "Hindi": "hi", "Thai": "th", "Vietnamese": "vi",
+    "Czech": "cs", "Slovak": "sk", "Hungarian": "hu", "Romanian": "ro",
+    "Bulgarian": "bg", "Ukrainian": "uk",
+}
+
+
+def _segrules_dir():
+    d = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "mcat", "segrules")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def load_rules(lang_code):
+    path = os.path.join(_segrules_dir(), f"{lang_code}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def save_rules(rules, lang_code):
+    path = os.path.join(_segrules_dir(), f"{lang_code}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rules, f, indent=2, ensure_ascii=False)
+
+
 DEFAULT_RULES = [
-    {"pattern": ".", "break_after": True, "case_sensitive": False, "whole_word": False},
-    {"pattern": "!", "break_after": True, "case_sensitive": False, "whole_word": False},
-    {"pattern": "?", "break_after": True, "case_sensitive": False, "whole_word": False},
-    {"pattern": ";", "break_after": True, "case_sensitive": False, "whole_word": False},
-    {"pattern": ":", "break_after": True, "case_sensitive": False, "whole_word": False},
-    {"pattern": "Mr", "break_after": False, "case_sensitive": True, "whole_word": True},
-    {"pattern": "Mrs", "break_after": False, "case_sensitive": True, "whole_word": True},
-    {"pattern": "Dr", "break_after": False, "case_sensitive": True, "whole_word": True},
-    {"pattern": "Ms", "break_after": False, "case_sensitive": True, "whole_word": True},
-    {"pattern": "Prof", "break_after": False, "case_sensitive": True, "whole_word": True},
-    {"pattern": "Sr", "break_after": False, "case_sensitive": True, "whole_word": True},
-    {"pattern": "Jr", "break_after": False, "case_sensitive": True, "whole_word": True},
+    {"pattern": ".", "break_after": True, "case_sensitive": False, "whole_word": False, "language": "All"},
+    {"pattern": "!", "break_after": True, "case_sensitive": False, "whole_word": False, "language": "All"},
+    {"pattern": "?", "break_after": True, "case_sensitive": False, "whole_word": False, "language": "All"},
+    {"pattern": ";", "break_after": True, "case_sensitive": False, "whole_word": False, "language": "All"},
+    {"pattern": ":", "break_after": True, "case_sensitive": False, "whole_word": False, "language": "All"},
+    {"pattern": "Mr", "break_after": False, "case_sensitive": True, "whole_word": True, "language": "English"},
+    {"pattern": "Mrs", "break_after": False, "case_sensitive": True, "whole_word": True, "language": "English"},
+    {"pattern": "Dr", "break_after": False, "case_sensitive": True, "whole_word": True, "language": "English"},
+    {"pattern": "Ms", "break_after": False, "case_sensitive": True, "whole_word": True, "language": "English"},
+    {"pattern": "Prof", "break_after": False, "case_sensitive": True, "whole_word": True, "language": "English"},
+    {"pattern": "Sr", "break_after": False, "case_sensitive": True, "whole_word": True, "language": "English"},
+    {"pattern": "Jr", "break_after": False, "case_sensitive": True, "whole_word": True, "language": "English"},
 ]
 
 
+def _rule_summary(rule):
+    parts = [f"\"{rule['pattern']}\""]
+    ba = rule.get("break_after", False)
+    bb = rule.get("break_before", False)
+    if ba:
+        parts.append("break after")
+    elif bb:
+        parts.append("break before")
+    else:
+        parts.append("no break")
+    flags = []
+    if rule.get("case_sensitive"):
+        flags.append("case")
+    if rule.get("whole_word"):
+        flags.append("whole word")
+    if flags:
+        parts.append(", ".join(flags))
+    lang = rule.get("language", "All")
+    parts.append(f"[{lang}]")
+    return " \u2014 ".join(parts)
+
+
 class AdvancedRulesDialog(QDialog):
-    def __init__(self, parent=None, rules=None):
+    def __init__(self, parent=None, rules=None, lang_code=None):
         super().__init__(parent)
-        self.setWindowTitle("Segmentation Rules")
-        self.setMinimumWidth(600)
+        self.lang_code = lang_code or "all"
+        title = f"Segmentation Rules — {self.lang_code}.json"
+        self.setWindowTitle(title)
+        self.setMinimumWidth(720)
+        self.setMinimumHeight(500)
         self.rules = rules if rules is not None else [dict(r) for r in DEFAULT_RULES]
+        self._modified_index = None
         self._build_ui()
-        self._populate_table()
+        self._refresh_list()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Pattern / Word", "Break After", "Case Sensitive", "Whole Word"])
-        self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in range(1, 4):
-            self.table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeToContents)
-        self.table.verticalHeader().setVisible(False)
-        layout.addWidget(self.table)
+        splitter = QSplitter(Qt.Horizontal)
 
-        input_row = QHBoxLayout()
-        self.pattern_input = QLineEdit()
-        self.pattern_input.setPlaceholderText("Enter pattern or punctuation...")
-        input_row.addWidget(self.pattern_input)
-        self.add_btn = QPushButton("Add Rule")
-        self.add_btn.clicked.connect(self._add_rule)
-        input_row.addWidget(self.add_btn)
-        layout.addLayout(input_row)
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        btn_row = QHBoxLayout()
-        self.remove_btn = QPushButton("Remove Selected Rule")
+        left_layout.addWidget(QLabel("Rules:"))
+        self.rule_list = QListWidget()
+        self.rule_list.currentRowChanged.connect(self._on_selection_changed)
+        left_layout.addWidget(self.rule_list)
+
+        list_btn_row = QHBoxLayout()
+        self.add_btn = QPushButton("Add")
+        self.add_btn.clicked.connect(self._start_add)
+        self.remove_btn = QPushButton("Remove")
         self.remove_btn.clicked.connect(self._remove_selected)
-        btn_row.addWidget(self.remove_btn)
-        btn_row.addStretch()
+        self.remove_btn.setEnabled(False)
+        list_btn_row.addWidget(self.add_btn)
+        list_btn_row.addWidget(self.remove_btn)
+        list_btn_row.addStretch()
+        left_layout.addLayout(list_btn_row)
+
+        splitter.addWidget(left_panel)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        detail_group = QGroupBox("Rule Details")
+        detail_layout = QVBoxLayout(detail_group)
+
+        detail_layout.addWidget(QLabel("Pattern (word, punctuation, or phrase):"))
+        self.pattern_input = QLineEdit()
+        self.pattern_input.setPlaceholderText("e.g. Mr, ., !, ...")
+        detail_layout.addWidget(self.pattern_input)
+
+        detail_layout.addWidget(QLabel("Language:"))
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItems(LANGUAGES)
+        detail_layout.addWidget(self.lang_combo)
+
+        detail_layout.addWidget(QLabel("Options:"))
+        self.break_after_cb = QCheckBox("Break after this pattern")
+        self.break_after_cb.setChecked(True)
+        self.break_before_cb = QCheckBox("Break before this pattern")
+        self.case_cb = QCheckBox("Case sensitive")
+        self.ww_cb = QCheckBox("Whole word only")
+        detail_layout.addWidget(self.break_after_cb)
+        detail_layout.addWidget(self.break_before_cb)
+        detail_layout.addWidget(self.case_cb)
+        detail_layout.addWidget(self.ww_cb)
+
+        detail_btn_row = QHBoxLayout()
+        self.save_btn = QPushButton("Add Rule")
+        self.save_btn.clicked.connect(self._save_rule)
+        self.save_btn.setStyleSheet("background-color: #0078d4; color: white;")
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self._clear_form)
+        detail_btn_row.addWidget(self.save_btn)
+        detail_btn_row.addWidget(self.clear_btn)
+        detail_btn_row.addStretch()
+        detail_layout.addLayout(detail_btn_row)
+
+        detail_layout.addStretch()
+        right_layout.addWidget(detail_group)
+
+        apply_row = QHBoxLayout()
+        apply_row.addStretch()
         self.apply_btn = QPushButton("Apply Rules")
-        self.apply_btn.clicked.connect(self.accept)
-        btn_row.addWidget(self.apply_btn)
-        layout.addLayout(btn_row)
+        self.apply_btn.clicked.connect(self._apply)
+        apply_row.addWidget(self.apply_btn)
+        right_layout.addLayout(apply_row)
 
-    def _make_checkbox(self, state):
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        cb = QCheckBox()
-        cb.setChecked(bool(state))
-        cb.stateChanged.connect(lambda s, r=type(self): self._on_check_changed())
-        lay.addWidget(cb, 0, Qt.AlignCenter)
-        return w
+        splitter.addWidget(right_panel)
+        splitter.setSizes([300, 420])
+        outer.addWidget(splitter)
 
-    def _populate_table(self):
-        self.table.setRowCount(0)
-        self.table.setRowCount(len(self.rules))
-        for idx, rule in enumerate(self.rules):
-            item = QTableWidgetItem(rule["pattern"])
-            self.table.setItem(idx, 0, item)
-            self.table.setCellWidget(idx, 1, self._make_checkbox(rule["break_after"]))
-            self.table.setCellWidget(idx, 2, self._make_checkbox(rule["case_sensitive"]))
-            self.table.setCellWidget(idx, 3, self._make_checkbox(rule["whole_word"]))
+    def _rule_summary(self, rule):
+        return _rule_summary(rule)
 
-    def _add_rule(self):
-        text = self.pattern_input.text().strip()
-        if not text:
+    def _refresh_list(self):
+        self.rule_list.blockSignals(True)
+        self.rule_list.clear()
+        for rule in self.rules:
+            item = QListWidgetItem(self._rule_summary(rule))
+            self.rule_list.addItem(item)
+        self.rule_list.blockSignals(False)
+        self.remove_btn.setEnabled(self.rule_list.count() > 0)
+
+    def _on_selection_changed(self, row):
+        if row < 0 or row >= len(self.rules):
+            self._clear_form()
+            self.remove_btn.setEnabled(False)
             return
-        self.rules.append({
-            "pattern": text,
-            "break_after": False,
-            "case_sensitive": False,
-            "whole_word": True,
-        })
-        self._populate_table()
+        self.remove_btn.setEnabled(True)
+        rule = self.rules[row]
+        self._modified_index = row
+        self.pattern_input.setText(rule["pattern"])
+        lang = rule.get("language", "All")
+        idx = self.lang_combo.findText(lang)
+        if idx >= 0:
+            self.lang_combo.setCurrentIndex(idx)
+        else:
+            self.lang_combo.setCurrentIndex(0)
+        self.break_after_cb.setChecked(rule.get("break_after", False))
+        self.break_before_cb.setChecked(rule.get("break_before", False))
+        self.case_cb.setChecked(rule.get("case_sensitive", False))
+        self.ww_cb.setChecked(rule.get("whole_word", False))
+        self.save_btn.setText("Update Rule")
+
+    def _clear_form(self):
+        self._modified_index = None
         self.pattern_input.clear()
-        self.table.selectRow(self.table.rowCount() - 1)
+        self.lang_combo.setCurrentIndex(0)
+        self.break_after_cb.setChecked(True)
+        self.break_before_cb.setChecked(False)
+        self.case_cb.setChecked(False)
+        self.ww_cb.setChecked(False)
+        self.save_btn.setText("Add Rule")
+        self.rule_list.clearSelection()
+
+    def _save_rule(self):
+        pattern = self.pattern_input.text().strip()
+        if not pattern:
+            QMessageBox.warning(self, "Missing Pattern", "Please enter a pattern.")
+            return
+        rule = {
+            "pattern": pattern,
+            "break_after": self.break_after_cb.isChecked(),
+            "break_before": self.break_before_cb.isChecked(),
+            "case_sensitive": self.case_cb.isChecked(),
+            "whole_word": self.ww_cb.isChecked(),
+            "language": self.lang_combo.currentText(),
+        }
+        if self._modified_index is not None and 0 <= self._modified_index < len(self.rules):
+            self.rules[self._modified_index] = rule
+        else:
+            self.rules.append(rule)
+        self._refresh_list()
+        self._clear_form()
+
+    def _start_add(self):
+        self._clear_form()
+        self.pattern_input.setFocus()
 
     def _remove_selected(self):
-        rows = set()
-        for idx in self.table.selectedIndexes():
-            rows.add(idx.row())
-        for row in sorted(rows, reverse=True):
-            if 0 <= row < len(self.rules):
-                self.rules.pop(row)
-        self._populate_table()
+        row = self.rule_list.currentRow()
+        if row < 0 or row >= len(self.rules):
+            return
+        reply = QMessageBox.question(
+            self, "Remove Rule",
+            f"Remove rule: {self._rule_summary(self.rules[row])}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.rules.pop(row)
+        self._refresh_list()
+        self._clear_form()
 
-    def _on_check_changed(self):
-        pass
+    def _apply(self):
+        if self.pattern_input.text().strip():
+            self._save_rule()
+        by_lang = {}
+        for rule in self.rules:
+            lang_name = rule.get("language", "All")
+            code = LANG_NAME_TO_CODE.get(lang_name, "all")
+            by_lang.setdefault(code, []).append(rule)
+        for code, lang_rules in by_lang.items():
+            save_rules(lang_rules, code)
+        self.accept()
 
     def get_rules(self):
-        for idx, rule in enumerate(self.rules):
-            w1 = self.table.cellWidget(idx, 1)
-            w2 = self.table.cellWidget(idx, 2)
-            w3 = self.table.cellWidget(idx, 3)
-            rule["break_after"] = w1.findChild(QCheckBox).isChecked()
-            rule["case_sensitive"] = w2.findChild(QCheckBox).isChecked()
-            rule["whole_word"] = w3.findChild(QCheckBox).isChecked()
         return self.rules
 
 
-def advanced_segmenter(text, custom_rules=None):
+def advanced_segmenter(text, custom_rules=None, language=None, lang_code=None):
     if not text:
         return []
 
-    rules = custom_rules if custom_rules else DEFAULT_RULES
-    splitters = [r for r in rules if r.get("break_after", True)]
-    exceptions = [r for r in rules if not r.get("break_after", True)]
+    rules = custom_rules
+    if rules is None and lang_code:
+        lang_rules = []
+        loaded = load_rules(lang_code)
+        if loaded:
+            lang_rules.extend(loaded)
+        loaded_all = load_rules("all")
+        if loaded_all:
+            lang_rules.extend(loaded_all)
+        if lang_rules:
+            rules = lang_rules
+    if rules is None:
+        rules = DEFAULT_RULES
 
-    try:
-        splitter_chars = set()
-        for r in splitters:
-            if len(r["pattern"]) == 1 and not r.get("whole_word", False):
-                splitter_chars.add(r["pattern"])
-            elif r.get("whole_word", False):
-                pass
-
-        if not splitter_chars:
+    if language and language != "All":
+        rules = [r for r in rules if r.get("language", "All") in ("All", language)]
+        if not rules:
             return text.splitlines()
 
-        char_class = "".join(re.escape(c) for c in sorted(splitter_chars))
+    after_rules = [r for r in rules if r.get("break_after", False)]
+    before_rules = [r for r in rules if r.get("break_before", False)]
+    exceptions = [r for r in rules if not r.get("break_after", False) and not r.get("break_before", False)]
 
+    try:
         positions = []
-        for m in re.finditer(rf"([{char_class}])\s+", text):
-            pos = m.start()
-            full = m.group(0)
-            punct = m.group(1)
-            end = m.end()
 
-            prefix = text[:pos].rstrip()
-            is_exception = False
-            for r in exceptions:
-                pat = r["pattern"]
-                flags = 0 if r.get("case_sensitive", False) else re.IGNORECASE
-                ww = r.get("whole_word", False)
-                try:
-                    if ww:
-                        check = re.search(rf"\b{re.escape(pat)}\b$", prefix, flags)
-                    else:
-                        check = re.search(rf"{re.escape(pat)}$", prefix, flags)
-                    if check:
-                        is_exception = True
-                        break
-                except re.error:
-                    continue
+        # --- break-after: single-char splitters ---
+        after_chars = set()
+        for r in after_rules:
+            if len(r["pattern"]) == 1 and not r.get("whole_word", False):
+                after_chars.add(r["pattern"])
 
-            if not is_exception:
-                positions.append((pos, end))
+        if after_chars:
+            cc = "".join(re.escape(c) for c in sorted(after_chars))
+            for m in re.finditer(rf"([{cc}])\s+", text):
+                if not _is_exception(text[:m.start()].rstrip(), exceptions):
+                    positions.append((m.start(), m.end()))
+
+        # --- break-before: single-char splitters ---
+        before_chars = set()
+        for r in before_rules:
+            if len(r["pattern"]) == 1 and not r.get("whole_word", False):
+                before_chars.add(r["pattern"])
+
+        if before_chars:
+            cc = "".join(re.escape(c) for c in sorted(before_chars))
+            for m in re.finditer(rf"(?<=\s)[{cc}]", text):
+                if not _is_exception(text[:m.start()].rstrip(), exceptions):
+                    positions.append((m.start(), m.start()))
+
+        positions.sort(key=lambda x: (x[0], x[1]))
+
+        # Merge overlapping / adjacent positions
+        merged = []
+        for p in positions:
+            if merged and p[0] < merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], p[1]))
+            else:
+                merged.append(p)
+        positions = merged
 
         if not positions:
             return [text]
@@ -172,7 +352,8 @@ def advanced_segmenter(text, custom_rules=None):
         segments = []
         prev = 0
         for start, end in positions:
-            segments.append(text[prev:start].strip())
+            if start > prev:
+                segments.append(text[prev:start].strip())
             prev = end
         segments.append(text[prev:].strip())
 
@@ -180,3 +361,20 @@ def advanced_segmenter(text, custom_rules=None):
 
     except re.error:
         return text.splitlines()
+
+
+def _is_exception(prefix, exceptions):
+    for r in exceptions:
+        pat = r["pattern"]
+        flags = 0 if r.get("case_sensitive", False) else re.IGNORECASE
+        ww = r.get("whole_word", False)
+        try:
+            if ww:
+                if re.search(rf"\b{re.escape(pat)}\b$", prefix, flags):
+                    return True
+            else:
+                if re.search(rf"{re.escape(pat)}$", prefix, flags):
+                    return True
+        except re.error:
+            continue
+    return False

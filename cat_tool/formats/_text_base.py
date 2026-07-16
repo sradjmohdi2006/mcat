@@ -6,7 +6,7 @@ def make_segments_from_texts(texts, notes_prefix="", source_locations=None):
     store = pofile()
     segments = []
     for idx, text in enumerate(texts):
-        if not text.strip():
+        if not text or not text.strip():
             continue
         all_tags = extract_all_tags(text)
         source_clean = apply_tags(text, all_tags)

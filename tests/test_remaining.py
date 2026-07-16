@@ -242,6 +242,92 @@ class TestMqxliffHandler(unittest.TestCase):
         reloaded = MqxliffHandler().load(out)
         self.assertEqual(reloaded[0]["target"], "")
 
+    def test_load_missing_source_element(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2" version="1.2">
+  <file original="test" source-language="en" target-language="es">
+    <body>
+      <trans-unit id="1">
+        <target>Hola</target>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_mqxliff(xml)
+        segs = MqxliffHandler().load(path)
+        self.assertEqual(len(segs), 0)
+
+    def test_load_missing_target_element(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2" version="1.2">
+  <file original="test" source-language="en" target-language="es">
+    <body>
+      <trans-unit id="1">
+        <source>Hello</source>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_mqxliff(xml)
+        segs = MqxliffHandler().load(path)
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["target"], "")
+        self.assertFalse(segs[0]["translated"])
+
+    def test_load_source_with_escaped_tags(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2" version="1.2">
+  <file original="test" source-language="en" target-language="es">
+    <body>
+      <trans-unit id="1">
+        <source>&lt;b&gt;Hello</source>
+        <target>&lt;b&gt;Hola</target>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_mqxliff(xml)
+        segs = MqxliffHandler().load(path)
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["source"], "<b>Hello")
+        self.assertIn("<b>", segs[0]["all_tags"])
+
+    def test_load_target_with_escaped_incomplete_tag(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2" version="1.2">
+  <file original="test" source-language="en" target-language="es">
+    <body>
+      <trans-unit id="1">
+        <source>Hello</source>
+        <target>Hola&lt;/b</target>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_mqxliff(xml)
+        segs = MqxliffHandler().load(path)
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["target"], "Hola</b")
+        self.assertTrue(segs[0]["translated"])
+
+    def test_load_mixed_escaped_and_plain_tags(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2" version="1.2">
+  <file original="test" source-language="en" target-language="es">
+    <body>
+      <trans-unit id="1">
+        <source>&lt;b&gt;Hello world</source>
+        <target>&lt;b&gt;Hola mundo</target>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_mqxliff(xml)
+        segs = MqxliffHandler().load(path)
+        self.assertEqual(len(segs), 1)
+        self.assertIn("<b>", segs[0]["all_tags"])
+        self.assertEqual(len(segs[0]["all_tags"]), 1)
+
 
 # ========================== SDLXLIFF TESTS ==========================
 
@@ -373,6 +459,88 @@ class TestSdlxliffHandler(unittest.TestCase):
         self.assertEqual(len(segs), 1)
         self.assertEqual(segs[0]["target"], "Hola")
 
+    def test_load_source_with_escaped_tags_in_mrk(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2"
+       xmlns:sdl="http://sdl.com/FileTypes/SdlXliff/1.0" version="1.2">
+  <file original="test" datatype="x-sdlfilterframework2" source-language="en" target-language="es">
+    <header/>
+    <body>
+      <trans-unit id="1">
+        <source>&lt;b&gt;Hello</source>
+        <seg-source><mrk mtype="seg" mid="1">&lt;b&gt;Hello</mrk></seg-source>
+        <target><mrk mtype="seg" mid="1">&lt;b&gt;Hola</mrk></target>
+        <sdl:seg-defs><sdl:seg id="1" conf="Translated"/></sdl:seg-defs>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_sdlxliff(xml)
+        segs = SdlxliffHandler().load(path)
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["source"], "<b>Hello")
+        self.assertIn("<b>", segs[0]["all_tags"])
+
+    def test_load_target_with_escaped_incomplete_tag_in_mrk(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2"
+       xmlns:sdl="http://sdl.com/FileTypes/SdlXliff/1.0" version="1.2">
+  <file original="test" datatype="x-sdlfilterframework2" source-language="en" target-language="es">
+    <header/>
+    <body>
+      <trans-unit id="1">
+        <source>Hello</source>
+        <seg-source><mrk mtype="seg" mid="1">Hello</mrk></seg-source>
+        <target><mrk mtype="seg" mid="1">Hola&lt;/b</mrk></target>
+        <sdl:seg-defs><sdl:seg id="1" conf="Translated"/></sdl:seg-defs>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_sdlxliff(xml)
+        segs = SdlxliffHandler().load(path)
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["target"], "Hola</b")
+
+    def test_load_missing_seg_source_and_source(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2"
+       xmlns:sdl="http://sdl.com/FileTypes/SdlXliff/1.0" version="1.2">
+  <file original="test" datatype="x-sdlfilterframework2" source-language="en" target-language="es">
+    <header/>
+    <body>
+      <trans-unit id="1">
+        <target><mrk mtype="seg" mid="1">Hola</mrk></target>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_sdlxliff(xml)
+        segs = SdlxliffHandler().load(path)
+        self.assertEqual(len(segs), 0)
+
+    def test_load_plain_target_with_escaped_tag(self):
+        xml = """<?xml version="1.0"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2"
+       xmlns:sdl="http://sdl.com/FileTypes/SdlXliff/1.0" version="1.2">
+  <file original="test" datatype="x-sdlfilterframework2" source-language="en" target-language="es">
+    <header/>
+    <body>
+      <trans-unit id="1">
+        <source>Hello</source>
+        <seg-source><mrk mtype="seg" mid="1">Hello</mrk></seg-source>
+        <target>Hola&lt;/i&gt;</target>
+        <sdl:seg-defs><sdl:seg id="1" conf="Translated"/></sdl:seg-defs>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>"""
+        path = self._make_sdlxliff(xml)
+        segs = SdlxliffHandler().load(path)
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["target"], "Hola</i>")
+        self.assertIn("</i>", segs[0]["all_tags"])
+
 
 # ========================== GUI SMOKE TEST ==========================
 
@@ -416,7 +584,7 @@ msgstr "Mundo"
             po_path = os.path.join(self.tmp.name, "test.po")
             with open(po_path, "w", encoding="utf-8") as f:
                 f.write(po_content)
-            segs = win.file_handler.load_file(po_path)
+            segs = win.state.file_handler.load_file(po_path)
             win.populate_table(segs)
             self.assertEqual(win.table.rowCount(), 2)
             self.assertEqual(win.table.item(0, 0).text(), "Hello")
@@ -440,11 +608,11 @@ msgstr ""
             po_path = os.path.join(self.tmp.name, "test.po")
             with open(po_path, "w", encoding="utf-8") as f:
                 f.write(po_content)
-            segs = win.file_handler.load_file(po_path)
+            segs = win.state.file_handler.load_file(po_path)
             win.populate_table(segs)
-            win.file_handler.segments[0]["target"] = "Hola"
-            win.update_table_row_status(0, win.file_handler.segments[0])
-            self.assertEqual(win.file_handler.segments[0]["target"], "Hola")
+            win.state.file_handler.segments[0]["target"] = "Hola"
+            win.update_table_row_status(0, win.state.file_handler.segments[0])
+            self.assertEqual(win.state.file_handler.segments[0]["target"], "Hola")
         finally:
             if not existed:
                 pass

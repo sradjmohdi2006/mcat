@@ -27,8 +27,7 @@ class SdlxliffHandler:
             if seg_source_el is not None:
                 src_parts = []
                 for mrk in seg_source_el.findall(f"{{{XLF_NS}}}mrk"):
-                    txt = "".join(mrk.itertext()) if mrk.text else (mrk.text or "")
-                    src_parts.append(txt.strip())
+                    src_parts.append("".join(mrk.itertext()).strip())
                 src_text = " ".join(p for p in src_parts if p)
             elif source_el is not None:
                 src_text = "".join(source_el.itertext()).strip()
@@ -38,8 +37,7 @@ class SdlxliffHandler:
                 if mrks:
                     tgt_parts = []
                     for mrk in mrks:
-                        txt = "".join(mrk.itertext()) if mrk.text else (mrk.text or "")
-                        tgt_parts.append(txt.strip())
+                        tgt_parts.append("".join(mrk.itertext()).strip())
                     tgt_text = " ".join(p for p in tgt_parts if p)
                 else:
                     tgt_text = "".join(target_el.itertext()).strip()

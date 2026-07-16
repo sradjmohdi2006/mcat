@@ -1,0 +1,113 @@
+================================================================================
+END USER LICENSE AGREEMENT (EULA) FOR MCAT TRANSLATION ENVIRONMENT
+================================================================================
+
+IMPORTANT — READ CAREFULLY: This End User License Agreement ("EULA" or "Agreement") is a legally binding contract between you (either an individual or a single legal entity, hereinafter referred to as the "Licensee" or "End User") and MCAT Software (hereinafter referred to as the "Licensor") for the MCAT computer software application, which includes executable files, database schemas, automated quality assurance algorithms, user interface layouts, and any associated electronic documentation (collectively, the "Software").
+
+BY DOWNLOADING, INSTALLING, COPYING, OR OTHERWISE USING THE SOFTWARE, YOU AGREE TO BE UNCONDITIONALLY BOUND BY ALL THE TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE TO THE TERMS OF THIS AGREEMENT, DO NOT INSTALL, RUN, OR USE THE SOFTWARE, AND IMMEDIATELY REMOVE ALL COPIES FROM YOUR DEVICES.
+
+Contact: skarmohdi960@gmail.com
+
+--------------------------------------------------------------------------------
+1. DEFINITIONS
+--------------------------------------------------------------------------------
+1.1 "Software" means the proprietary MCAT Computer-Assisted Translation (CAT) desktop application, including all compiled PyInstaller executable binaries, user interfaces, dynamic regex segmentation rule grids, automated Quality Assurance (QA) modules, and associated parsing scripts.
+1.2 "Local Database Schema" refers to the proprietary, highly indexed binary file storage format utilizing SQLite and Write-Ahead Logging (WAL) architectures, designated by the `.mcat.db` file extension.
+1.3 "License Key" means the unique, cryptographic token or serial alphanumeric code issued by Licensor or its authorized Merchant of Record (MoR) to activate and authenticate the perpetual commercial license on the Licensee's hardware.
+1.4 "Third-Party Components" means any open-source software, libraries, or external linguistic resources (such as Hunspell dictionaries or LibreOffice `.oxt` extension packages) utilized within or alongside the Software.
+
+--------------------------------------------------------------------------------
+2. LICENSE GRANT & ONE-TIME PAYMENT TERMS
+--------------------------------------------------------------------------------
+2.1 Perpetual Commercial License: Subject to the terms of this Agreement and the payment of the one-time license fee, Licensor grants Licensee a limited, personal, non-exclusive, non-transferable, non-sublicensable, perpetual license to install and execute the Software on a single computer or workstation for professional, commercial, or personal translation and localization activities.
+2.2 One-Time Payment Model: The Software is licensed strictly under a perpetual, flat-fee model. Payment of the initial license fee entitles the Licensee to use the specific compiled version of the Software indefinitely without mandatory recurring subscription charges, monthly billing loops, or cloud connectivity requirements.
+2.3 License Activation: The Software requires activation via a valid License Key. Licensee agrees not to share, distribute, resell, or publish their unique License Key. Simultaneous execution of the Software across multiple machines under a single-seat License Key is strictly prohibited without purchasing additional licenses.
+
+--------------------------------------------------------------------------------
+3. INTELLECTUAL PROPERTY & OWNERSHIP RIGHTS
+--------------------------------------------------------------------------------
+3.1 Ownership: The Software is licensed, not sold. Licensor retains all title, ownership, copyrights, trade secrets, patents, trademarks, and all other intellectual property rights in and to the Software, including but not limited to the graphical user interface design, the `.mcat.db` architectural layout, the automated QA validation logic, and all compiled code artifacts.
+3.2 Proprietary Structure: Licensee acknowledges that the structural organization of the `.mcat.db` database schemas, the isolated XML format conversion pipelines, and the internal segmentation rule builders represent proprietary trade secrets of the Licensor.
+
+--------------------------------------------------------------------------------
+4. STRICT RESTRICTIONS & ANTI-REVERSE ENGINEERING
+--------------------------------------------------------------------------------
+Licensee explicitly agrees NOT to, directly or indirectly, and shall not permit any third party to:
+4.1 Reverse Engineer or Decompile: Decompile, disassemble, decrypt, extract, memory-dump, or reverse-engineer the executable code, PyInstaller archives, or compiled Python binaries of the Software, nor attempt to reconstruct or discover any source code or underlying algorithmic ideas.
+4.2 Modify or Create Derivative Works: Modify, adapt, translate, or create derivative works based upon the Software, its graphical interface, or its proprietary `.mcat.db` storage architecture for commercial redistribution.
+4.3 Commercial Redistribution: Rent, lease, lend, sell, sublicense, assign, distribute, time-share, or otherwise transfer the Software or your License Key to any third party.
+4.4 Circumvent Protection: Bypass, alter, or circumvent any licensing verification mechanisms, cryptographic key validations, or technical limitations implemented within the Software.
+4.5 Removal of Notices: Remove, alter, or obscure any copyright, trademark, patent, or other proprietary rights notices displayed on or within the Software frame.
+
+--------------------------------------------------------------------------------
+5. 100% LOCAL DATA PRIVACY & NDA COMPLIANCE
+--------------------------------------------------------------------------------
+5.1 Zero Cloud Telemetry & Offline Execution: The Software is architected explicitly as a self-contained, offline desktop application. Licensor warrants that the Software does NOT contain web trackers, cloud telemetry loops, background data-harvesting scripts, or remote synchronization routines.
+5.2 Data Sovereignty: All data ingested into the Software—including source documents, translation memories (TM), project glossaries, linguistic rules, Hunspell dictionary files, and completed `.mcat.db` project databases—resides exclusively on the Licensee's local hardware.
+5.3 Confidentiality & NDA Protection: Because zero project data is transmitted to remote cloud servers, third-party APIs, or Licensor's systems, Licensee maintains complete control over their client materials, ensuring full operational compliance with strict Non-Disclosure Agreements (NDAs) enforced by corporate or agency clients.
+
+--------------------------------------------------------------------------------
+6. DATA BACKUP & STORAGE DISCLAIMER
+--------------------------------------------------------------------------------
+6.1 Local Storage Responsibility: Licensee acknowledges that because all project databases (`.mcat.db`) are stored locally on their central storage drives, Licensee is solely responsible for implementing appropriate data backup procedures, redundant archiving, and power-loss prevention measures.
+6.2 File Integrity: While the Software utilizes SQLite Write-Ahead Logging (WAL) and ACID-compliant transaction controls to prevent corruption during unexpected shutdowns, Licensor shall NOT be held liable for data loss, project corruption, or financial damages resulting from hardware failures, operating system crashes, disk read/write errors, or accidental deletion of local files by the Licensee.
+
+--------------------------------------------------------------------------------
+7. AUTOMATED QUALITY ASSURANCE (QA) & LINGUISTIC DISCLAIMER
+--------------------------------------------------------------------------------
+7.1 Assistive Utility Only: The built-in automated QA validation engine—including tag balance verification, numeric pattern checking, capitalization guards, terminology enforcement, and Hunspell/`spylls` spellchecking—is provided solely as an assistive proofreading utility.
+7.2 No Guarantee of Accuracy: Licensor does NOT warrant or guarantee that the automated QA engine will detect 100% of linguistic errors, missing tags, numeric discrepancies, or formatting omissions, nor that it will produce error-free deliverables.
+7.3 Professional Liability: Licensee remains solely and entirely responsible for the linguistic accuracy, structural integrity, and final quality of all translated deliverables exported from the Software and submitted to their respective clients or employers.
+
+--------------------------------------------------------------------------------
+8. THIRD-PARTY COMPONENTS & OPEN-SOURCE LICENSES
+--------------------------------------------------------------------------------
+8.1 Acknowledgment: The Software may bundle, utilize, or interact with third-party open-source libraries (such as Python runtime environments, Qt/PyQt graphical frameworks, RapidFuzz string matching engines, and Hunspell linguistic parsers).
+8.2 Independent Licenses: Such Third-Party Components are distributed under their respective open-source licenses (e.g., MIT, BSD, LGPL). Nothing in this EULA restricts your rights under, or grants you rights that supersede, the terms and conditions of any applicable open-source license for those specific independent components.
+
+--------------------------------------------------------------------------------
+9. MAINTENANCE, UPDATES & SUPPORT
+--------------------------------------------------------------------------------
+9.1 No Mandatory Updates: This perpetual license entitles Licensee to run the specific version of the Software acquired. Licensor is under no obligation to provide continuous technical support, automated over-the-air updates, or future major version upgrades.
+9.2 Discretionary Updates: Licensor may, at its sole discretion, release bug fixes, minor updates, or downloadable patches, which shall become subject to the terms of this Agreement unless accompanied by a separate updated EULA.
+
+--------------------------------------------------------------------------------
+10. DISCLAIMER OF WARRANTIES ("AS IS")
+--------------------------------------------------------------------------------
+THE SOFTWARE, ITS DATABASE SCHEMAS, AND ALL ASSOCIATED COMPONENTS ARE PROVIDED TO THE LICENSEE "AS IS" AND "AS AVAILABLE," WITH ALL FAULTS AND WITHOUT WARRANTY OF ANY KIND. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, LICENSOR EXPLICITLY DISCLAIMS ALL WARRANTIES, WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING, WITHOUT LIMITATION, IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TIMELINESS, ACCURACY, AND NON-INFRINGEMENT OF THIRD-PARTY RIGHTS. LICENSOR DOES NOT WARRANT THAT THE OPERATION OF THE SOFTWARE WILL BE UNINTERRUPTED, COMPLETELY ERROR-FREE, OR COMPATIBLE WITH EVERY FUTURE OPERATING SYSTEM UPDATE.
+
+--------------------------------------------------------------------------------
+11. LIMITATION OF LIABILITY
+--------------------------------------------------------------------------------
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL LICENSOR, ITS FOUNDERS, DEVELOPERS, OR EMPLOYEES BE LIABLE FOR ANY SPECIAL, INCIDENTAL, INDIRECT, PUNITIVE, EXEMPLARY, OR CONSEQUENTIAL DAMAGES WHATSOEVER (INCLUDING, WITHOUT LIMITATION, DAMAGES FOR LOSS OF BUSINESS PROFITS, BUSINESS INTERRUPTION, LOSS OF BUSINESS INFORMATION, LOSS OF CLIENT CONTRACTS, DATA CORRUPTION, OR ANY OTHER PECUNIARY LOSS) ARISING OUT OF THE USE OF, OR INABILITY TO USE, THE SOFTWARE OR THE AUTOMATED QA VALIDATION ENGINE, EVEN IF LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+IN ANY CASE, LICENSOR'S ENTIRE AGGREGATE LIABILITY UNDER ANY PROVISION OF THIS AGREEMENT SHALL BE STRICTLY LIMITED TO THE ACTUAL AMOUNT PAID BY THE LICENSEE TO ACQUIRE THE ONE-TIME COMMERCIAL LICENSE FOR THE SOFTWARE DURING THE TWELVE (12) MONTHS PRECEDING THE CLAIM.
+
+--------------------------------------------------------------------------------
+12. INDEMNIFICATION
+--------------------------------------------------------------------------------
+Licensee agrees to defend, indemnify, and hold harmless the Licensor from and against any and all claims, demands, lawsuits, damages, liabilities, costs, and expenses (including reasonable legal and attorneys' fees) arising out of or resulting from: (a) Licensee's use or misuse of the Software; (b) any breach by Licensee of this Agreement; (c) any violation of third-party Non-Disclosure Agreements, confidentiality clauses, or copyright laws committed by Licensee while using the Software; or (d) any translation errors, omissions, or formatting failures present in Licensee's final exported deliverables.
+
+--------------------------------------------------------------------------------
+13. TERMINATION
+--------------------------------------------------------------------------------
+13.1 Immediate Termination: This Agreement is effective until terminated. Licensor may terminate this Agreement immediately and without formal notice if Licensee breaches any of the restrictive covenants, anti-reverse engineering clauses, or licensing terms set forth herein.
+13.2 Obligations Upon Termination: Upon termination of this License for any reason, all rights granted to Licensee shall immediately cease, and Licensee must immediately cease all use of the Software, deactivate their License Key, and permanently delete and destroy all copies of the compiled application and documentation from their computer systems and storage media.
+
+--------------------------------------------------------------------------------
+14. GOVERNING LAW & JURISDICTION
+--------------------------------------------------------------------------------
+This Agreement, and any dispute, controversy, or claim arising out of or relating to the formation, interpretation, breach, or termination thereof, shall be governed by, construed, and enforced in accordance with the laws of Algeria, without regard to its conflict of law rules or principles. Any legal action or proceeding arising under this EULA shall be brought exclusively in the competent courts located in Algeria, and both parties hereby consent to the personal jurisdiction of such courts.
+
+--------------------------------------------------------------------------------
+15. GENERAL PROVISIONS
+--------------------------------------------------------------------------------
+15.1 Entire Agreement: This EULA constitutes the entire agreement between Licensee and Licensor concerning the Software and supersedes all prior or contemporaneous oral or written communications, proposals, representations, and understandings.
+15.2 Severability: If any provision of this Agreement is held to be invalid, illegal, or unenforceable by a court of competent jurisdiction, such provision shall be modified to the minimum extent necessary to make it valid and enforceable, and the remaining provisions of this Agreement shall remain in full force and effect.
+15.3 No Waiver: The failure or delay of Licensor to exercise or enforce any right or provision of this Agreement shall not constitute a waiver of such right or provision in the future.
+15.4 Force Majeure: Licensor shall not be liable for any failure or delay in performance due to circumstances beyond its reasonable control, including but not limited to internet service provider failures, payment gateway outages, or changes in regional software regulations.
+
+--------------------------------------------------------------------------------
+MCAT SOFTWARE — ALL RIGHTS RESERVED.
+Contact: skarmohdi960@gmail.com
+================================================================================

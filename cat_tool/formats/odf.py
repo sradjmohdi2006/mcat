@@ -70,8 +70,8 @@ class OdfHandler:
                     if target:
                         for child in list(p.childNodes):
                             if child.nodeType == OdfText.TEXT_NODE:
-                                p.removeChild(child)
-                        p.appendChild(p.ownerDocument.createTextNode(target))
+                                child.data = target
+                                break
 
         for h in doc.getElementsByType(H):
             t = "".join(n.data for n in h.childNodes if n.nodeType == OdfText.TEXT_NODE).strip()
@@ -82,8 +82,8 @@ class OdfHandler:
                     if target:
                         for child in list(h.childNodes):
                             if child.nodeType == OdfText.TEXT_NODE:
-                                h.removeChild(child)
-                        h.appendChild(h.ownerDocument.createTextNode(target))
+                                child.data = target
+                                break
 
         for table in doc.getElementsByType(Table):
             for ri, row in enumerate(table.getElementsByType(TableRow)):
@@ -96,7 +96,7 @@ class OdfHandler:
                             if target:
                                 for child in list(cell.childNodes):
                                     if child.nodeType == OdfText.TEXT_NODE:
-                                        cell.removeChild(child)
-                                cell.appendChild(cell.ownerDocument.createTextNode(target))
+                                        child.data = target
+                                        break
 
         doc.save(output_path)

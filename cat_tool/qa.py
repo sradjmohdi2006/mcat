@@ -19,6 +19,8 @@ def _extract_numbers(text):
 
 
 def _count_tags(text):
+    if not text:
+        return 0
     from cat_tool.formats.tag_utils import PH_L, PH_R
     return text.count(PH_L)
 

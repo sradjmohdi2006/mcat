@@ -365,6 +365,40 @@ class TestTagUtils(unittest.TestCase):
         tags = extract_all_tags("<b><b><i></b></i>")
         self.assertEqual(len(tags), 4)
 
+    def test_extract_incomplete_open_tag(self):
+        tags = extract_all_tags("<b no closing angle")
+        self.assertEqual(tags, [])
+
+    def test_extract_incomplete_close_tag(self):
+        tags = extract_all_tags("b> without opening")
+        self.assertEqual(tags, [])
+
+    def test_extract_bare_less_than(self):
+        tags = extract_all_tags("Hello < world")
+        self.assertEqual(tags, [])
+
+    def test_extract_empty_angle_brackets(self):
+        tags = extract_all_tags("<>")
+        self.assertEqual(tags, [])
+
+    def test_apply_with_incomplete_tag_preserved(self):
+        text = "<b>hello</b"
+        tags = ["<b>"]
+        result = apply_tags(text, tags)
+        self.assertIn("</b", result)
+        restored = restore_tags(result, tags)
+        self.assertEqual(restored, text)
+
+    def test_apply_mixed_complete_and_incomplete_tags(self):
+        text = "<b>Hello</b <i>world"
+        tags = extract_all_tags(text)
+        self.assertIn("<b>", tags)
+        self.assertNotIn("</b", tags)
+        self.assertNotIn("<i>", tags)
+        applied = apply_tags(text, tags)
+        restored = restore_tags(applied, tags)
+        self.assertEqual(restored, text)
+
 
 class TestMakeSegmentsFromTexts(unittest.TestCase):
     def test_basic(self):

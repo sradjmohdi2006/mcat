@@ -45,7 +45,10 @@ class SpellChecker:
         return candidates[0]
 
     def load_from_archive(self, archive_path):
-        lang_id = self._lang_id_from_archive(archive_path)
+        try:
+            lang_id = self._lang_id_from_archive(archive_path)
+        except Exception:
+            return False
         target_dir = os.path.join(DICTS_DIR, lang_id)
         os.makedirs(target_dir, exist_ok=True)
 
@@ -118,6 +121,8 @@ class SpellChecker:
         return sorted(suggestions)
 
     def check_text(self, text):
+        if not text:
+            return []
         words = re.findall(r"\b[^\W\d_]+\b", text, re.UNICODE)
         errors = []
         seen = set()

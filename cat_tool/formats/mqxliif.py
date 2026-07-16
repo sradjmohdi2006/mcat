@@ -15,8 +15,11 @@ class MqxliffHandler:
         for idx, unit_el in enumerate(body.findall(f"{{{ns}}}trans-unit")):
             src_el = unit_el.find(f"{{{ns}}}source")
             tgt_el = unit_el.find(f"{{{ns}}}target")
-            src_text = src_el.text or "" if src_el is not None else ""
-            tgt_text = tgt_el.text or "" if tgt_el is not None else ""
+            src_text = "".join(src_el.itertext()).strip() if src_el is not None else ""
+            tgt_text = "".join(tgt_el.itertext()).strip() if tgt_el is not None else ""
+
+            if not src_text:
+                continue
 
             src_tags = extract_all_tags(src_text)
             tgt_tags = extract_all_tags(tgt_text)
