@@ -86,6 +86,17 @@ class CompletionDelegate(QStyledItemDelegate):
                             label = f"{int(score):>2}%  {target}"
                             all_items.append((score, 0, label, target))
 
+            if source_text:
+                sem_matches = self.tm.get_semantic_matches(source_text, limit=5, source_lang=self.source_lang, target_lang=self.target_lang) if self.tm and hasattr(self.tm, 'get_semantic_matches') else []
+                for m in sem_matches:
+                    target = m.get("target", "")
+                    score = m.get("score", 0)
+                    if not current_text or current_text.lower() in target.lower():
+                        if target.lower() not in seen_targets:
+                            seen_targets.add(target.lower())
+                            label = f"SEM {int(score):>2}%  {target}"
+                            all_items.append((score, 1, label, target))
+
             if self.glossary and source_text:
                 gl_terms = self.glossary.check_segment(source_text, source_lang=self.source_lang, target_lang=self.target_lang) if hasattr(self.glossary, 'check_segment') else []
                 for term in gl_terms:
@@ -95,7 +106,7 @@ class CompletionDelegate(QStyledItemDelegate):
                         if target.lower() not in seen_targets:
                             seen_targets.add(target.lower())
                             label = f"GLOS  {target}  ({src})"
-                            all_items.append((100, 1, label, target))
+                            all_items.append((100, 2, label, target))
 
             if current_text and self.spellcheck and hasattr(self.spellcheck, 'suggest'):
                 last_word = current_text.strip().split()[-1] if current_text.strip() else ""
@@ -106,7 +117,7 @@ class CompletionDelegate(QStyledItemDelegate):
                         if replacement.lower() not in seen_targets:
                             seen_targets.add(replacement.lower())
                             label = f"SPELL  {replacement}"
-                            all_items.append((90, 2, label, replacement))
+                            all_items.append((90, 3, label, replacement))
 
             all_items.sort(key=lambda x: (-x[0], x[1]))
             suggestions = [item[2] for item in all_items[:30]]
