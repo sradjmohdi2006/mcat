@@ -17,7 +17,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 
-ROOT = Path(r"C:\Users\hp\Documents\mcat")
+ROOT = Path(__file__).parent.resolve()
 OUTPUT = ROOT / "mcat_codebase_report.pdf"
 NOW = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -39,6 +39,8 @@ FILES = [
         ROOT / "cat_tool" / "project.py",
         ROOT / "cat_tool" / "file_handler.py",
         ROOT / "cat_tool" / "mcat_format_manager.py",
+        ROOT / "cat_tool" / "state_manager.py",
+        ROOT / "cat_tool" / "workers.py",
     ]),
     ("Format Handlers", [
         ROOT / "cat_tool" / "formats" / "__init__.py",
@@ -239,22 +241,24 @@ def build():
     total_classes = sum(len(c) for _, _, _, c, _ in file_stats)
     total_funcs = sum(len(f) for _, _, _, _, f in file_stats)
 
+    core_count = len([s for s in file_stats if s[0] == "Core Library"])
+    format_count = len([s for s in file_stats if s[0] == "Format Handlers"])
+    test_count = len([s for s in file_stats if s[0] == "Tests"])
+
     overview_data = [
         ["Metric", "Value"],
         ["Total Python Files", str(len(file_stats))],
         ["Total Lines of Code", str(total_lines)],
         ["Total Classes Defined", str(total_classes)],
         ["Total Functions Defined", str(total_funcs)],
-        ["Application Classes", "20 (in cat_tool package)"],
-        ["Format Handler Classes", "11"],
-        ["Test Classes", "32"],
-        ["Core Library Modules", "12"],
-        ["Format Handlers", "14"],
-        ["Test Files", "4"],
+        ["Core Library Modules", str(core_count)],
+        ["Format Handlers", str(format_count)],
+        ["Test Files", str(test_count)],
         ["Lines per File (avg)", f"{total_lines // max(len(file_stats), 1)}"],
         ["GUI Framework", "PyQt5"],
-        ["Database Engine", "SQLite3"],
+        ["Database Engine", "SQLite3 + sqlite-vec"],
         ["Fuzzy Matching", "rapidfuzz"],
+        ["Embedding Models", "fastembed (sentence-transformers)"],
         ["Spell Checking", "spylls (Hunspell)"],
     ]
     t = Table(overview_data, colWidths=[2.2 * inch, 3.8 * inch])

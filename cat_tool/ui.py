@@ -11,13 +11,14 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QFileDialog, QStatusBar, QProgressBar, QMessageBox,
                              QCheckBox, QDialog, QFormLayout, QLineEdit, QHeaderView,
                              QComboBox, QDialogButtonBox, QMenu, QScrollArea, QSpinBox)
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QColor, QFont, QKeySequence
 
 from cat_tool.file_handler import CATFileHandler, convert_to_po
 from cat_tool.formats.tag_utils import PH_L, PH_R, extract_all_tags, apply_tags, restore_tags
 from cat_tool import qa
 from cat_tool.state_manager import AppState
+from cat_tool.workers import SegmentationWorker, EmbeddingWorker, FuzzyMatchWorker
 
 from cat_tool.dialogs import (
     GlossaryDialog, LangDialog, NewProjectDialog, ProjectSettingsDialog,
@@ -25,6 +26,20 @@ from cat_tool.dialogs import (
     FILE_FILTER,
 )
 
+
+# Cached color constants for cell styling
+_SRC_FUZZY_BG = QColor("#3d2e00")
+_SRC_FUZZY_FG = QColor("#ff9800")
+_SRC_TRANSLATED_BG = QColor("#002b00")
+_SRC_TRANSLATED_FG = QColor("#28a745")
+_SRC_DEFAULT_BG = QColor("#1a1a1e")
+_SRC_DEFAULT_FG = QColor("#a0a0a8")
+_TGT_FUZZY_BG = QColor("#3d2e00")
+_TGT_FUZZY_FG = QColor("#ff9800")
+_TGT_TRANSLATED_BG = QColor("#003300")
+_TGT_TRANSLATED_FG = QColor("#ffffff")
+_TGT_DEFAULT_BG = QColor("#1a1a1e")
+_TGT_DEFAULT_FG = QColor("#808080")
 
 DARK_STYLESHEET = """
 QMainWindow {
@@ -140,6 +155,10 @@ QLabel {
 
 
 class MainWindow(QMainWindow):
+    _seg_requested = pyqtSignal(str)
+    _emb_requested = pyqtSignal(str, int)
+    _fuzzy_requested = pyqtSignal(str, str, str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("mcat")
@@ -149,11 +168,83 @@ class MainWindow(QMainWindow):
         self.state = AppState()
         self.current_segment_index = -1
         self.modified = False
+        self._seg_thread = None
+        self._seg_worker = None
+        self._emb_thread = None
+        self._emb_worker = None
+        self._fuzzy_thread = None
+        self._fuzzy_worker = None
+        self._pending_fuzzy_source = ""
+
+        self._selection_debounce = QTimer()
+        self._selection_debounce.setSingleShot(True)
+        self._selection_debounce.setInterval(80)
+        self._selection_debounce.timeout.connect(self._on_selection_debounced)
+
+        self._model_idle_timer = QTimer()
+        self._model_idle_timer.setSingleShot(True)
+        self._model_idle_timer.setInterval(300000)
+        self._model_idle_timer.timeout.connect(self._unload_idle_model)
 
         self.init_menu()
         self.init_ui()
         self._apply_settings()
         self.update_stats()
+
+    def _ensure_seg_worker(self):
+        if self._seg_thread is not None:
+            return
+        self._seg_thread = QThread()
+        self._seg_worker = SegmentationWorker()
+        self._seg_worker.moveToThread(self._seg_thread)
+        self._seg_requested.connect(self._seg_worker.load_file)
+        self._seg_worker.chunk_ready.connect(self._on_segmentation_chunk)
+        self._seg_worker.finished.connect(self._on_segmentation_finished)
+        self._seg_worker.error.connect(self._on_segmentation_error)
+        self._seg_thread.start()
+
+    def _ensure_emb_worker(self):
+        if self._emb_thread is not None:
+            return
+        self._emb_thread = QThread()
+        self._emb_worker = EmbeddingWorker(self.state.tm.db_path)
+        self._emb_worker.moveToThread(self._emb_thread)
+        self._emb_requested.connect(self._emb_worker.add_embedding)
+        self._emb_thread.start()
+
+    def _ensure_fuzzy_worker(self):
+        if self._fuzzy_thread is not None:
+            return
+        self._fuzzy_thread = QThread()
+        self._fuzzy_worker = FuzzyMatchWorker(self.state.tm.db_path)
+        self._fuzzy_worker.moveToThread(self._fuzzy_thread)
+        self._fuzzy_requested.connect(self._fuzzy_worker.find_matches)
+        self._fuzzy_worker.finished.connect(self._on_fuzzy_matches_ready)
+        self._fuzzy_thread.start()
+
+    def _stop_threads(self):
+        if self._seg_thread is not None and self._seg_thread.isRunning():
+            self._seg_thread.quit()
+            self._seg_thread.wait(2000)
+        if self._emb_thread is not None and self._emb_thread.isRunning():
+            self._emb_thread.quit()
+            self._emb_thread.wait(2000)
+        if self._fuzzy_thread is not None and self._fuzzy_thread.isRunning():
+            self._fuzzy_thread.quit()
+            self._fuzzy_thread.wait(2000)
+
+    def cleanup(self):
+        self._stop_threads()
+
+    def changeEvent(self, event):
+        if event.type() == event.WindowStateChange and self.isMinimized():
+            self._unload_idle_model()
+        super().changeEvent(event)
+
+    def closeEvent(self, event):
+        self._model_idle_timer.stop()
+        self._stop_threads()
+        super().closeEvent(event)
 
     def init_menu(self):
         menubar = self.menuBar()
@@ -329,6 +420,12 @@ class MainWindow(QMainWindow):
         self.spellcheck_action.triggered.connect(self.run_spellcheck)
 
         tools_menu.addSeparator()
+        self.clear_caches_action = tools_menu.addAction("Clear &Caches")
+        self.clear_caches_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.clear_caches_action.setStatusTip("Free memory by clearing TM cache and unloading the embedding model")
+        self.clear_caches_action.triggered.connect(self.clear_caches)
+
+        tools_menu.addSeparator()
         self.options_action = tools_menu.addAction("&Options...")
         self.options_action.setShortcut(QKeySequence("Ctrl+,"))
         self.options_action.triggered.connect(self.show_options)
@@ -434,6 +531,79 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("Ready")
         self.status_bar.addWidget(self.status_label)
 
+    # ----------------- BACKGROUND WORKER CALLBACKS -----------------
+    def _on_segmentation_chunk(self, chunk, total, label):
+        self.table.blockSignals(True)
+        self.table.setUpdatesEnabled(False)
+
+        start_row = len(self.state.file_handler.segments)
+        self.state.file_handler.segments.extend(chunk)
+
+        self.table.setRowCount(len(self.state.file_handler.segments))
+        for idx, seg in enumerate(chunk):
+            row = start_row + idx
+            src_text = seg.get("source_clean", seg["source"])
+            src_item = QTableWidgetItem(src_text)
+            src_item.setFlags(src_item.flags() & ~Qt.ItemIsEditable)
+            self.set_source_cell_style(src_item, seg)
+            self.table.setItem(row, 0, src_item)
+
+            tgt_text = seg.get("target_clean", seg["target"])
+            tgt_item = QTableWidgetItem(tgt_text)
+            tgt_item.setFlags(tgt_item.flags() | Qt.ItemIsEditable)
+            self.set_target_cell_style(tgt_item, seg)
+            self.table.setItem(row, 1, tgt_item)
+
+        self.table.setUpdatesEnabled(True)
+        self.table.blockSignals(False)
+
+        self.completion_delegate.set_source_texts([
+            s.get("source_clean", s["source"]) for s in self.state.file_handler.segments
+        ])
+
+    def _on_segmentation_finished(self, segments, label):
+        self.state.file_handler.segments = segments
+        self.state.file_handler.current_file_path = label if os.path.isfile(label) else None
+        self.modified = False
+        self.update_stats()
+        self.status_label.setText(f"Loaded: {os.path.basename(label) if os.path.isfile(label) else label}")
+        if segments:
+            self.table.selectRow(0)
+
+    def _on_segmentation_error(self, error_msg):
+        QMessageBox.critical(self, "Error Loading File", error_msg)
+        self.status_label.setText("Load failed")
+
+    def _on_embedding_finished(self, row_id):
+        pass
+
+    def _on_embedding_error(self, error_msg, row_id):
+        print(f"Embedding error for row {row_id}: {error_msg}")
+
+    def _touch_model_timer(self):
+        self._model_idle_timer.stop()
+        self._model_idle_timer.start()
+
+    def _unload_idle_model(self):
+        self.state.tm.unload_model()
+        if self._emb_worker is not None:
+            self._emb_worker.unload_model()
+        self._model_idle_timer.stop()
+
+    def clear_caches(self):
+        self.state.tm.clear_cache()
+        self._unload_idle_model()
+        self.status_label.setText("Caches cleared, embedding model unloaded.")
+
+    def _on_selection_debounced(self):
+        if self.current_segment_index < 0:
+            return
+        seg = self.state.file_handler.segments[self.current_segment_index]
+        self._pending_fuzzy_source = seg["source"]
+        self._touch_model_timer()
+        self.update_fuzzy_matches(seg["source"])
+        self.update_glossary_matches(seg["source"])
+
     # ----------------- FILE OPERATIONS -----------------
     def open_file(self):
         if self.modified:
@@ -451,33 +621,24 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        try:
-            segments = self.state.file_handler.load_file(file_path)
-            self.populate_table(segments)
-            self.modified = False
-            self.update_stats()
-            self.status_label.setText(f"Loaded file: {os.path.basename(file_path)}")
-            if segments:
-                self.table.selectRow(0)
-        except Exception as e:
-            QMessageBox.critical(self, "Error Loading File", str(e))
+        self.state.file_handler.segments = []
+        self.table.setRowCount(0)
+        self.status_label.setText("Loading file...")
+        self._ensure_seg_worker()
+        self._seg_requested.emit(file_path)
 
     def open_file_path(self, file_path):
         if not os.path.exists(file_path):
             return
-        try:
-            segments = self.state.file_handler.load_file(file_path)
-            self.populate_table(segments)
-            self.modified = False
-            self.update_stats()
-            self.status_label.setText(f"Loaded file: {os.path.basename(file_path)}")
-            if segments:
-                self.table.selectRow(0)
-        except Exception as e:
-            QMessageBox.critical(self, "Error Loading File", str(e))
+        self.state.file_handler.segments = []
+        self.table.setRowCount(0)
+        self.status_label.setText("Loading file...")
+        self._ensure_seg_worker()
+        self._seg_requested.emit(file_path)
 
     def populate_table(self, segments):
         self.table.blockSignals(True)
+        self.table.setUpdatesEnabled(False)
         self.table.setRowCount(len(segments))
         for idx, seg in enumerate(segments):
             src_text = seg.get("source_clean", seg["source"])
@@ -492,6 +653,7 @@ class MainWindow(QMainWindow):
             self.set_target_cell_style(tgt_item, seg)
             self.table.setItem(idx, 1, tgt_item)
 
+        self.table.setUpdatesEnabled(True)
         self.table.blockSignals(False)
 
         source_texts = [seg.get("source_clean", seg["source"]) for seg in segments]
@@ -507,25 +669,25 @@ class MainWindow(QMainWindow):
 
     def set_source_cell_style(self, item, seg):
         if seg["fuzzy"]:
-            item.setBackground(QColor("#3d2e00"))
-            item.setForeground(QColor("#ff9800"))
+            item.setBackground(_SRC_FUZZY_BG)
+            item.setForeground(_SRC_FUZZY_FG)
         elif seg.get("translated", False) or (seg["target"] and seg["target"].strip()):
-            item.setBackground(QColor("#002b00"))
-            item.setForeground(QColor("#28a745"))
+            item.setBackground(_SRC_TRANSLATED_BG)
+            item.setForeground(_SRC_TRANSLATED_FG)
         else:
-            item.setBackground(QColor("#1a1a1e"))
-            item.setForeground(QColor("#a0a0a8"))
+            item.setBackground(_SRC_DEFAULT_BG)
+            item.setForeground(_SRC_DEFAULT_FG)
 
     def set_target_cell_style(self, item, seg):
         if seg["fuzzy"]:
-            item.setBackground(QColor("#3d2e00"))
-            item.setForeground(QColor("#ff9800"))
+            item.setBackground(_TGT_FUZZY_BG)
+            item.setForeground(_TGT_FUZZY_FG)
         elif seg.get("translated", False) or (seg["target"] and seg["target"].strip()):
-            item.setBackground(QColor("#003300"))
-            item.setForeground(QColor("#ffffff"))
+            item.setBackground(_TGT_TRANSLATED_BG)
+            item.setForeground(_TGT_TRANSLATED_FG)
         else:
-            item.setBackground(QColor("#1a1a1e"))
-            item.setForeground(QColor("#808080"))
+            item.setBackground(_TGT_DEFAULT_BG)
+            item.setForeground(_TGT_DEFAULT_FG)
 
     def _on_target_cell_changed(self, row, col):
         if col != 1:
@@ -553,7 +715,11 @@ class MainWindow(QMainWindow):
         seg["target_clean"] = apply_tags(restored, all_tags)
 
         if restored:
-            self.state.tm.add_translation(seg["source"], restored, self.state.tm_sl, self.state.tm_tl)
+            row_id = self.state.tm.add_translation(seg["source"], restored, self.state.tm_sl, self.state.tm_tl)
+            if row_id is not None:
+                self._ensure_emb_worker()
+                self._touch_model_timer()
+                self._emb_requested.emit(seg["source"], row_id)
 
         item.setText(seg["target_clean"])
         self.set_target_cell_style(item, seg)
@@ -654,8 +820,7 @@ class MainWindow(QMainWindow):
         self.fuzzy_checkbox.setChecked(seg["fuzzy"])
         self.fuzzy_checkbox.blockSignals(False)
 
-        self.update_fuzzy_matches(seg["source"])
-        self.update_glossary_matches(seg["source"])
+        self._selection_debounce.start()
 
     def fuzzy_state_changed(self, state):
         if self.current_segment_index < 0:
@@ -701,7 +866,10 @@ class MainWindow(QMainWindow):
             seg["all_tags"] = all_tags
             seg["target_clean"] = apply_tags(restored, all_tags)
             if restored:
-                self.state.tm.add_translation(seg["source"], restored, self.state.tm_sl, self.state.tm_tl)
+                row_id = self.state.tm.add_translation(seg["source"], restored, self.state.tm_sl, self.state.tm_tl)
+                if row_id is not None:
+                    self._ensure_emb_worker()
+                    self._emb_requested.emit(seg["source"], row_id)
 
             self.modified = True
             if item:
@@ -709,13 +877,6 @@ class MainWindow(QMainWindow):
             self.update_table_row_status(row, seg)
 
         self.update_stats()
-
-        if self.modified and self.state.file_handler.current_file_path:
-            try:
-                self.state.file_handler.save_file()
-                self.modified = False
-            except Exception as e:
-                self.status_label.setText(f"Auto-save failed: {e}")
 
         if row < len(self.state.file_handler.segments) - 1:
             self.table.selectRow(row + 1)
@@ -809,8 +970,20 @@ class MainWindow(QMainWindow):
 
     # ----------------- SIDEBAR SUGGESTIONS & INTERACTIONS -----------------
     def update_fuzzy_matches(self, source_text):
+        self._ensure_fuzzy_worker()
+        self._fuzzy_requested.emit(
+            source_text,
+            self.state.tm_sl or "",
+            self.state.tm_tl or ""
+        )
+
+    def _on_fuzzy_matches_ready(self, matches):
+        if self.current_segment_index < 0:
+            return
+        current_source = self.state.file_handler.segments[self.current_segment_index]["source"]
+        if current_source != self._pending_fuzzy_source:
+            return
         self.tm_list.clear()
-        matches = self.state.get_fuzzy_matches(source_text)
         for m in matches:
             item = QListWidgetItem(f"[{m['score']}% Match] {m['target']}\n(From: \"{m['source']}\")")
             item.setData(Qt.UserRole, m["target"])
@@ -1402,10 +1575,6 @@ class MainWindow(QMainWindow):
             return
 
         name, src_lang, tgt_lang, src_files = dial.get_data()
-        if not name:
-            QMessageBox.warning(self, "Invalid", "Project name cannot be empty.")
-            return
-
         self.state.new_project(name, src_lang, tgt_lang, src_files)
         self.current_segment_index = -1
         self.modified = False
@@ -1692,16 +1861,9 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        try:
-            segs = self.state.file_handler.load_file(file_path)
-            self.populate_table(segs)
-            self.modified = False
-            self.update_stats()
-            self.status_label.setText(f"Loaded SDLXLIFF: {os.path.basename(file_path)}")
-            if segs:
-                self.table.selectRow(0)
-        except Exception as e:
-            QMessageBox.critical(self, "Error Loading SDLXLIFF", str(e))
+        self.status_label.setText("Loading SDLXLIFF...")
+        self._ensure_seg_worker()
+        self._seg_requested.emit(file_path)
 
     def _update_recent_menu(self):
         self.recent_menu.clear()

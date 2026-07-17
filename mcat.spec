@@ -1,12 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sqlite_vec
 
+
+_sqlite_vec_dir = os.path.dirname(sqlite_vec.__file__)
+_sqlite_vec_dll = os.path.join(_sqlite_vec_dir, "vec0.dll")
 
 a = Analysis(
     ['mcat.py'],
     pathex=[],
-    binaries=[],
+    binaries=[(_sqlite_vec_dll, 'sqlite_vec')] if os.path.exists(_sqlite_vec_dll) else [],
     datas=[],
-    hiddenimports=['winreg', 'pdfplumber', 'pdfminer', 'pdfminer.high_level', 'pdfminer.pdfinterp', 'pdfminer.converter', 'pdfminer.layout', 'pdfminer.pdfpage', 'pypdf', 'reportlab', 'reportlab.lib.pagesizes', 'reportlab.pdfgen', 'docx', 'pptx', 'openpyxl', 'xlrd', 'odf', 'odf.opendocument', 'odf.text', 'odf.table', 'odf.element', 'translate', 'translate.storage', 'translate.storage.po', 'translate.storage.factory', 'rapidfuzz', 'sqlite3', 'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui', 'spylls', 'spylls.hunspell', 'spylls.hunspell.readers'],
+    hiddenimports=['winreg', 'sqlite_vec', 'pdfplumber', 'pdfminer', 'pdfminer.high_level', 'pdfminer.pdfinterp', 'pdfminer.converter', 'pdfminer.layout', 'pdfminer.pdfpage', 'pypdf', 'reportlab', 'reportlab.lib.pagesizes', 'reportlab.pdfgen', 'docx', 'pptx', 'openpyxl', 'xlrd', 'odf', 'odf.opendocument', 'odf.text', 'odf.table', 'odf.element', 'translate', 'translate.storage', 'translate.storage.po', 'translate.storage.factory', 'rapidfuzz', 'sqlite3', 'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui', 'spylls', 'spylls.hunspell', 'spylls.hunspell.readers'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

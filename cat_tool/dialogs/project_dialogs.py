@@ -58,7 +58,7 @@ class NewProjectDialog(QDialog):
         layout.addSpacing(10)
         buttons_layout = QHBoxLayout()
         self.create_btn = QPushButton("Create Project", self)
-        self.create_btn.clicked.connect(self.accept)
+        self.create_btn.clicked.connect(self._validate_and_accept)
         self.cancel_btn = QPushButton("Cancel", self)
         self.cancel_btn.clicked.connect(self.reject)
         self.cancel_btn.setStyleSheet("background-color: #4a4a52;")
@@ -66,6 +66,14 @@ class NewProjectDialog(QDialog):
         buttons_layout.addWidget(self.create_btn)
         buttons_layout.addWidget(self.cancel_btn)
         layout.addLayout(buttons_layout)
+
+    def _validate_and_accept(self):
+        if not self.name_edit.text().strip():
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Invalid", "Project name cannot be empty.")
+            self.name_edit.setFocus()
+            return
+        super().accept()
 
     def browse_files(self):
         files, _ = QFileDialog.getOpenFileNames(
