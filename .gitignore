@@ -6,3 +6,5 @@ build/
 *.db
 recent_projects.json
 .opencode/
+mcat_setup.exe
+mcat_codebase_report.pdf
