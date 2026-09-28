@@ -1,6 +1,7 @@
 import re
 import json
 import os
+from functools import lru_cache
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLineEdit, QPushButton, QWidget, QCheckBox, QComboBox, QLabel,
@@ -281,10 +282,108 @@ class AdvancedRulesDialog(QDialog):
         return self.rules
 
 
+# ============================================================
+# OPTIMIZED SEGMENTATION ENGINE
+# ============================================================
+
+class _CompiledRules:
+    """Pre-compiled segmentation rules for fast matching."""
+    __slots__ = (
+        "after_chars", "before_chars", "after_regex", "before_regex",
+        "exception_patterns", "exception_regex", "has_exceptions"
+    )
+    
+    def __init__(self, rules, language=None):
+        self.after_chars = set()
+        self.before_chars = set()
+        self.after_regex = None
+        self.before_regex = None
+        self.exception_patterns = []
+        self.exception_regex = None
+        self.has_exceptions = False
+        
+        # Filter by language
+        if language and language != "All":
+            rules = [r for r in rules if r.get("language", "All") in ("All", language)]
+        
+        after_rules = [r for r in rules if r.get("break_after", False)]
+        before_rules = [r for r in rules if r.get("break_before", False)]
+        exceptions = [r for r in rules if not r.get("break_after", False) and not r.get("break_before", False)]
+        
+        # Single-char break-after (fast path: character class)
+        for r in after_rules:
+            pat = r["pattern"]
+            if len(pat) == 1 and not r.get("whole_word", False):
+                self.after_chars.add(pat)
+        
+        # Single-char break-before (fast path: character class)
+        for r in before_rules:
+            pat = r["pattern"]
+            if len(pat) == 1 and not r.get("whole_word", False):
+                self.before_chars.add(pat)
+        
+        # Multi-char or whole-word rules -> compile regex
+        after_multi = [r for r in after_rules if len(r["pattern"]) > 1 or r.get("whole_word", False)]
+        before_multi = [r for r in before_rules if len(r["pattern"]) > 1 or r.get("whole_word", False)]
+        
+        if after_multi:
+            parts = []
+            for r in after_multi:
+                pat = re.escape(r["pattern"])
+                if r.get("whole_word", False):
+                    pat = rf"\b{pat}\b"
+                flags = "" if r.get("case_sensitive", False) else "(?i)"
+                parts.append(f"(?P<after_{id(r)}>{flags}{pat})")
+            self.after_regex = re.compile("|".join(parts))
+        
+        if before_multi:
+            parts = []
+            for r in before_multi:
+                pat = re.escape(r["pattern"])
+                if r.get("whole_word", False):
+                    pat = rf"\b{pat}\b"
+                flags = "" if r.get("case_sensitive", False) else "(?i)"
+                parts.append(f"(?P<before_{id(r)}>{flags}{pat})")
+            self.before_regex = re.compile("|".join(parts))
+        
+        # Exceptions: compile combined regex for fast checking
+        if exceptions:
+            self.has_exceptions = True
+            for r in exceptions:
+                pat = re.escape(r["pattern"])
+                flags = 0 if r.get("case_sensitive", False) else re.IGNORECASE
+                if r.get("whole_word", False):
+                    pat = rf"\b{pat}\b"
+                self.exception_patterns.append((re.compile(pat + "$", flags), r.get("whole_word", False)))
+            # Combined exception regex for single check
+            exc_parts = []
+            for r in exceptions:
+                pat = re.escape(r["pattern"])
+                if r.get("whole_word", False):
+                    pat = rf"\b{pat}\b"
+                flags = "" if r.get("case_sensitive", False) else "(?i)"
+                exc_parts.append(f"(?P<exc_{id(r)}>{flags}{pat})$")
+            self.exception_regex = re.compile("|".join(exc_parts))
+
+
+@lru_cache(maxsize=32)
+def _get_compiled_rules(rules_key, language):
+    """Cache compiled rules by (rules_key, language)."""
+    # Reconstruct rules from key
+    rules = [
+        {"pattern": p, "break_after": ba, "break_before": bb,
+         "case_sensitive": cs, "whole_word": ww, "language": lang}
+        for p, ba, bb, cs, ww, lang in rules_key
+    ]
+    return _CompiledRules(rules, language)
+
+
 def advanced_segmenter(text, custom_rules=None, language=None, lang_code=None):
+    """Fast segmentation using pre-compiled rules and single-pass scanning."""
     if not text:
         return []
-
+    
+    # Resolve rules
     rules = custom_rules
     if rules is None and lang_code:
         lang_rules = []
@@ -298,83 +397,98 @@ def advanced_segmenter(text, custom_rules=None, language=None, lang_code=None):
             rules = lang_rules
     if rules is None:
         rules = DEFAULT_RULES
+    
+    # Get compiled rules (cached)
+    rules_key = tuple((r["pattern"], r.get("break_after", False), r.get("break_before", False),
+                       r.get("case_sensitive", False), r.get("whole_word", False), r.get("language", "All"))
+                      for r in rules)
+    compiled = _get_compiled_rules(rules_key, language or "All")
+    
+    # Fast path: no rules matched
+    if not compiled.after_chars and not compiled.before_chars and not compiled.after_regex and not compiled.before_regex:
+        return [text.strip()] if text.strip() else []
+    
+    # Find all break positions in a single pass
+    positions = []
+    text_len = len(text)
+    
+    # 1. Single-char break-after: scan once
+    if compiled.after_chars:
+        # Build a set for O(1) lookup
+        after_set = compiled.after_chars
+        i = 0
+        while i < text_len - 1:
+            ch = text[i]
+            if ch in after_set and text[i + 1].isspace():
+                # Check exception
+                if not compiled.has_exceptions or not _is_exception_fast(text, i, compiled):
+                    positions.append((i, i + 1))
+                i += 2  # skip the whitespace
+                continue
+            i += 1
+    
+    # 2. Single-char break-before: scan once
+    if compiled.before_chars:
+        before_set = compiled.before_chars
+        i = 1
+        while i < text_len:
+            ch = text[i]
+            if ch in before_set and text[i - 1].isspace():
+                if not compiled.has_exceptions or not _is_exception_fast(text, i, compiled):
+                    positions.append((i, i))
+            i += 1
+    
+    # 3. Multi-char / whole-word rules: use compiled regex
+    if compiled.after_regex:
+        for m in compiled.after_regex.finditer(text):
+            start, end = m.span()
+            # Check if followed by whitespace (break-after semantics)
+            if end < text_len and text[end].isspace():
+                if not compiled.has_exceptions or not _is_exception_fast(text, end, compiled):
+                    positions.append((end, end + 1))  # break after the pattern + whitespace
+    
+    if compiled.before_regex:
+        for m in compiled.before_regex.finditer(text):
+            start, end = m.span()
+            # Check if preceded by whitespace (break-before semantics)
+            if start > 0 and text[start - 1].isspace():
+                if not compiled.has_exceptions or not _is_exception_fast(text, start, compiled):
+                    positions.append((start, start))
+    
+    if not positions:
+        return [text.strip()] if text.strip() else []
+    
+    # Sort and merge positions
+    positions.sort()
+    merged = []
+    for p in positions:
+        if merged and p[0] < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], p[1]))
+        else:
+            merged.append(p)
+    
+    # Extract segments
+    segments = []
+    prev = 0
+    for start, end in merged:
+        if start > prev:
+            seg = text[prev:start].strip()
+            if seg:
+                segments.append(seg)
+        prev = end
+    # Last segment
+    last = text[prev:].strip()
+    if last:
+        segments.append(last)
+    
+    return segments
 
-    if language and language != "All":
-        rules = [r for r in rules if r.get("language", "All") in ("All", language)]
-        if not rules:
-            return text.splitlines()
 
-    after_rules = [r for r in rules if r.get("break_after", False)]
-    before_rules = [r for r in rules if r.get("break_before", False)]
-    exceptions = [r for r in rules if not r.get("break_after", False) and not r.get("break_before", False)]
-
-    try:
-        positions = []
-
-        # --- break-after: single-char splitters ---
-        after_chars = set()
-        for r in after_rules:
-            if len(r["pattern"]) == 1 and not r.get("whole_word", False):
-                after_chars.add(r["pattern"])
-
-        if after_chars:
-            cc = "".join(re.escape(c) for c in sorted(after_chars))
-            for m in re.finditer(rf"([{cc}])\s+", text):
-                if not _is_exception(text[:m.start()].rstrip(), exceptions):
-                    positions.append((m.start(), m.end()))
-
-        # --- break-before: single-char splitters ---
-        before_chars = set()
-        for r in before_rules:
-            if len(r["pattern"]) == 1 and not r.get("whole_word", False):
-                before_chars.add(r["pattern"])
-
-        if before_chars:
-            cc = "".join(re.escape(c) for c in sorted(before_chars))
-            for m in re.finditer(rf"(?<=\s)[{cc}]", text):
-                if not _is_exception(text[:m.start()].rstrip(), exceptions):
-                    positions.append((m.start(), m.start()))
-
-        positions.sort(key=lambda x: (x[0], x[1]))
-
-        # Merge overlapping / adjacent positions
-        merged = []
-        for p in positions:
-            if merged and p[0] < merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], p[1]))
-            else:
-                merged.append(p)
-        positions = merged
-
-        if not positions:
-            return [text]
-
-        segments = []
-        prev = 0
-        for start, end in positions:
-            if start > prev:
-                segments.append(text[prev:start].strip())
-            prev = end
-        segments.append(text[prev:].strip())
-
-        return [s for s in segments if s]
-
-    except re.error:
-        return text.splitlines()
-
-
-def _is_exception(prefix, exceptions):
-    for r in exceptions:
-        pat = r["pattern"]
-        flags = 0 if r.get("case_sensitive", False) else re.IGNORECASE
-        ww = r.get("whole_word", False)
-        try:
-            if ww:
-                if re.search(rf"\b{re.escape(pat)}\b$", prefix, flags):
-                    return True
-            else:
-                if re.search(rf"{re.escape(pat)}$", prefix, flags):
-                    return True
-        except re.error:
-            continue
+def _is_exception_fast(text, pos, compiled):
+    """Fast exception check using pre-compiled regex on prefix."""
+    # Check prefix ending at pos
+    prefix = text[:pos]
+    # Use combined exception regex
+    if compiled.exception_regex:
+        return bool(compiled.exception_regex.search(prefix))
     return False

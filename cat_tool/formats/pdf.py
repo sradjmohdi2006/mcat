@@ -1,43 +1,34 @@
 from cat_tool.formats._text_base import make_segments_from_texts
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from pypdf import PdfReader, PdfWriter
-import io
+import fitz  # PyMuPDF
 
 
 class PdfHandler:
     def load(self, file_path):
-        import pdfplumber
         texts = []
         locations = []
-        with pdfplumber.open(file_path) as pdf:
-            for page_num, page in enumerate(pdf.pages):
-                chars = page.chars
-                if not chars:
+        doc = fitz.open(file_path)
+        for page_num, page in enumerate(doc):
+            blocks = page.get_text("dict")["blocks"]
+            for block in blocks:
+                if "lines" not in block:
                     continue
-                chars.sort(key=lambda c: (c["top"], c["x0"]))
-                lines = []
-                current_line = []
-                current_top = chars[0]["top"]
-                for c in chars:
-                    if abs(c["top"] - current_top) > max(c.get("height", 8) * 0.5, 3):
-                        if current_line:
-                            lines.append("".join(current_line))
-                            current_line = []
-                        current_top = c["top"]
-                    current_line.append(c.get("text", ""))
-                if current_line:
-                    lines.append("".join(current_line))
-                block_text = " ".join(line.strip() for line in lines if line.strip())
-                if block_text.strip():
-                    texts.append(block_text.strip())
+                block_text = ""
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        block_text += span["text"]
+                    block_text += "\n"
+                block_text = block_text.strip()
+                if block_text:
+                    texts.append(block_text)
                     locations.append({"page": page_num, "block": len(locations)})
+        doc.close()
         return make_segments_from_texts(texts, "Page ", source_locations=locations)
 
     def render(self, original_path, segments, output_path):
-        reader = PdfReader(original_path)
-        writer = PdfWriter()
-
+        """Render translated PDF preserving original layout using PyMuPDF."""
+        doc = fitz.open(original_path)
+        
+        # Group segments by page
         page_data = {}
         for seg in segments:
             loc = seg.get("source_location", {})
@@ -46,32 +37,90 @@ class PdfHandler:
             page_num = loc.get("page", 0)
             target = seg.get("target", "").strip()
             source = seg.get("source", "").strip()
-            page_data.setdefault(page_num, []).append({
-                "source": source,
-                "target": target or source,
-                "index": seg.get("index", 0),
-            })
+            if target:
+                page_data.setdefault(page_num, []).append({
+                    "source": source,
+                    "target": target,
+                    "index": seg.get("index", 0),
+                })
+        
+        # For each page, replace text in-place
+        for page_num, segs in page_data.items():
+            if page_num >= len(doc):
+                continue
+            page = doc[page_num]
+            
+            # Get text instances with positions
+            for seg in segs:
+                source = seg["source"]
+                target = seg["target"]
+                
+                # Search for source text on page
+                text_instances = page.search_for(source)
+                if not text_instances:
+                    # Try fuzzy search - split into words
+                    words = source.split()
+                    if len(words) > 1:
+                        for word in words:
+                            instances = page.search_for(word)
+                            if instances:
+                                text_instances = instances
+                                break
+                
+                if text_instances:
+                    # Replace text in each instance (usually just one)
+                    for inst in text_instances:
+                        # Add redaction annotation to remove original
+                        page.add_redact_annot(inst, fill=(1, 1, 1))
+                    # Apply redactions
+                    page.apply_redactions()
+                    
+                    # Insert translated text at same position
+                    # Use first instance's position
+                    inst = text_instances[0]
+                    # Get font info from original text
+                    text_dict = page.get_text("dict")
+                    font_name = "helv"  # default
+                    font_size = 10
+                    color = (0, 0, 0)
+                    
+                    # Try to find font info from the text block
+                    for block in text_dict["blocks"]:
+                        if "lines" in block:
+                            for line in block["lines"]:
+                                for span in line["spans"]:
+                                    span_rect = fitz.Rect(span["bbox"])
+                                    if span_rect.intersects(inst):
+                                        font_name = span["font"]
+                                        font_size = span["size"]
+                                        color = span["color"]
+                                        break
+                    
+                    # Insert translated text
+                    page.insert_text(
+                        inst.tl,  # top-left point
+                        target,
+                        fontname=font_name,
+                        fontsize=font_size,
+                        color=color,
+                    )
+        
+        doc.save(output_path)
+        doc.close()
 
-        num_pages = len(reader.pages)
-        for page_num in range(num_pages):
-            packet = io.BytesIO()
-            w, h = letter
-            c = canvas.Canvas(packet, pagesize=letter)
-            c.setFont("Helvetica", 10)
-            y = h - 50
-            segs = page_data.get(page_num, [])
-            if segs:
-                for s in segs:
-                    c.drawString(50, y, f"{s['target']}")
-                    y -= 16
-            else:
-                c.drawString(50, y, "(no translated content)")
-            c.save()
-            packet.seek(0)
-            overlay = PdfReader(packet)
-            page = reader.pages[page_num]
-            page.merge_page(overlay.pages[0])
-            writer.add_page(page)
-
-        with open(output_path, "wb") as f:
-            writer.write(f)
+    def load_bookmarks(self, file_path):
+        """Extract PDF outline/bookmark titles using PyMuPDF."""
+        bookmarks = []
+        try:
+            doc = fitz.open(file_path)
+            toc = doc.get_toc()
+            for level, title, page in toc:
+                bookmarks.append({
+                    "title": title.strip(),
+                    "level": level - 1,
+                    "page": page - 1,  # 0-indexed
+                })
+            doc.close()
+        except Exception:
+            pass
+        return bookmarks

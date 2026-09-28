@@ -15,7 +15,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tensorflow', 'torch', 'scipy', 'matplotlib', 'pandas', 'numba', 'llvmlite', 'sqlalchemy', 'notebook', 'jupyter', 'ipython', 'flask', 'django', 'selenium', 'sklearn', 'cv2', 'nltk', 'gensim', 'spacy', 'seaborn', 'networkx', 'sympy', 'statsmodels', 'kivy', 'pygame', 'tornado', 'sphinx', 'nose', 'rope', 'autopep8', 'mypy', 'black', 'pylint'],
+    excludes=['tensorflow', 'torch', 'scipy', 'matplotlib', 'pandas', 'numba', 'llvmlite', 'sqlalchemy', 'notebook', 'jupyter', 'ipython', 'flask', 'django', 'selenium', 'sklearn', 'cv2', 'nltk', 'gensim', 'spacy', 'seaborn', 'networkx', 'sympy', 'statsmodels', 'kivy', 'pygame', 'tornado', 'sphinx', 'nose', 'rope', 'autopep8', 'mypy', 'black', 'pylint', 'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui', 'shiboken6'],
     noarchive=False,
     optimize=0,
 )

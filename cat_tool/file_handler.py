@@ -87,16 +87,51 @@ class CATFileHandler:
         MqxliffHandler().save(self.segments, output_path, src_lang, tgt_lang)
         self.current_file_path = output_path
 
-    def render_translated(self, output_path):
+    def render_translated(self, output_path, original_path=None):
+        """Render translated segments to output_path.
+        
+        If original_path is provided, use its handler for rendering (to support
+        MCAT.DB working format where current_file_path is the .mcat.db file).
+        """
         if not self.segments:
             raise ValueError("No segments to render.")
-        if not self.current_file_path:
-            raise ValueError("No original file path; cannot render.")
         if self._handler is None:
             raise ValueError("No handler available for rendering.")
-        if not hasattr(self._handler, "render"):
-            raise ValueError(f"{type(self._handler).__name__} does not support rendering.")
-        self._handler.render(self.current_file_path, self.segments, output_path)
+        
+        # Determine which handler to use for rendering
+        render_handler = self._handler
+        render_source_path = self.current_file_path
+        
+        if original_path and original_path != self.current_file_path:
+            # Use original file's handler for rendering
+            ext = os.path.splitext(original_path)[1].lower()
+            if ext == ".mcat.db":
+                ext = os.path.splitext(original_path.replace(".mcat.db", ""))[1].lower()
+            from cat_tool.formats import FORMAT_HANDLERS, FACTORY_EXTS
+            handler_cls = FORMAT_HANDLERS.get(ext)
+            if handler_cls is not None:
+                render_handler = handler_cls()
+                render_source_path = original_path
+            elif ext in FACTORY_EXTS:
+                from cat_tool.formats.factory import FactoryHandler
+                render_handler = FactoryHandler()
+                render_source_path = original_path
+        
+        if not hasattr(render_handler, "render"):
+            raise ValueError(f"{type(render_handler).__name__} does not support rendering.")
+        render_handler.render(render_source_path, self.segments, output_path)
+
+    def load_bookmarks(self):
+        """Extract bookmarks/outlines from the current file, if supported.
+
+        Returns a list of dicts with keys: title, level, page.
+        Returns an empty list if the format has no bookmark support or no bookmarks.
+        """
+        if not self.current_file_path or not self._handler:
+            return []
+        if hasattr(self._handler, "load_bookmarks"):
+            return self._handler.load_bookmarks(self.current_file_path)
+        return []
 
 
 def convert_to_po(source_path, output_path):
@@ -110,4 +145,13 @@ def convert_to_po(source_path, output_path):
         if seg.get("fuzzy"):
             unit.markfuzzy()
     store.savefile(output_path)
+    return output_path
+
+
+def convert_to_mcatdb(source_path, output_path):
+    """Convert any supported source file to MCAT.DB working format."""
+    handler = CATFileHandler()
+    segments = handler.load_file(source_path)
+    from cat_tool.formats.mcatdb import McatDbHandler
+    McatDbHandler().save(segments, output_path)
     return output_path

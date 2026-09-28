@@ -19,10 +19,12 @@ from cat_tool.formats.tag_utils import PH_L, PH_R, extract_all_tags, apply_tags,
 from cat_tool import qa
 from cat_tool.state_manager import AppState
 from cat_tool.workers import SegmentationWorker, EmbeddingWorker, FuzzyMatchWorker
+from cat_tool.search_fetcher import SearchFetcher
 
 from cat_tool.dialogs import (
     GlossaryDialog, LangDialog, NewProjectDialog, ProjectSettingsDialog,
     ShortcutsDialog, QADialog, SpellCheckDialog, SettingsDialog, TagViewDialog,
+    ChapterViewDialog, SearchDialog,
     FILE_FILTER,
 )
 
@@ -176,6 +178,15 @@ class MainWindow(QMainWindow):
         self._fuzzy_worker = None
         self._pending_fuzzy_source = ""
 
+        # Search fetcher for unified search
+        self.search_fetcher = SearchFetcher(self.state.tm.db_path, self.state.glossary.db_path)
+        self._search_dialog = None
+
+        # Bookmark filter state
+        self._bookmark_filter_active = False
+        self._bookmark_filter_title = ""
+        self._bookmark_filter_indices = []   # original segment indices visible in the filter
+
         self._selection_debounce = QTimer()
         self._selection_debounce.setSingleShot(True)
         self._selection_debounce.setInterval(80)
@@ -244,6 +255,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._model_idle_timer.stop()
         self._stop_threads()
+        if self._search_dialog is not None:
+            self._search_dialog.close()
+            self._search_dialog = None
         super().closeEvent(event)
 
     def init_menu(self):
@@ -360,6 +374,23 @@ class MainWindow(QMainWindow):
         self.last_seg_action.setShortcut(QKeySequence("Ctrl+End"))
         self.last_seg_action.triggered.connect(self._go_last_segment)
 
+        # View Menu
+        view_menu = menubar.addMenu("&View")
+
+        self.chapter_view_action = view_menu.addAction("&Chapter View...")
+        self.chapter_view_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        self.chapter_view_action.setStatusTip("View file bookmarks / chapter headings for translation")
+        self.chapter_view_action.triggered.connect(self.show_chapter_view)
+
+        view_menu.addSeparator()
+
+        self.bookmark_filter_action = view_menu.addAction("View Only &From Bookmark")
+        self.bookmark_filter_action.setCheckable(True)
+        self.bookmark_filter_action.setChecked(False)
+        self.bookmark_filter_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        self.bookmark_filter_action.setStatusTip("Filter segments to show only those under a selected bookmark")
+        self.bookmark_filter_action.triggered.connect(self._toggle_bookmark_filter)
+
         # TM Menu
         tm_menu = menubar.addMenu("&Translation Memory")
         import_tm_action = tm_menu.addAction("&Import PO into TM...")
@@ -402,6 +433,13 @@ class MainWindow(QMainWindow):
         seg_rules_action = tools_menu.addAction("&Segmentation Rules...")
         seg_rules_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
         seg_rules_action.triggered.connect(self.open_segmentation_rules)
+
+        tools_menu.addSeparator()
+
+        self.search_action = tools_menu.addAction("&Search...")
+        self.search_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        self.search_action.setStatusTip("Search in memory, TM sources, and TM targets")
+        self.search_action.triggered.connect(self.show_search)
 
         tools_menu.addSeparator()
 
@@ -564,11 +602,17 @@ class MainWindow(QMainWindow):
     def _on_segmentation_finished(self, segments, label):
         self.state.file_handler.segments = segments
         self.state.file_handler.current_file_path = label if os.path.isfile(label) else None
+        self._reset_bookmark_filter()
         self.modified = False
         self.update_stats()
         self.status_label.setText(f"Loaded: {os.path.basename(label) if os.path.isfile(label) else label}")
         if segments:
             self.table.selectRow(0)
+        
+        # Update search dialog with new segments
+        if self._search_dialog is not None:
+            self._search_dialog.update_segments(segments)
+            self._search_dialog.update_tm_langs(self.state.tm_sl, self.state.tm_tl)
 
     def _on_segmentation_error(self, error_msg):
         QMessageBox.critical(self, "Error Loading File", error_msg)
@@ -605,6 +649,14 @@ class MainWindow(QMainWindow):
         self.update_glossary_matches(seg["source"])
 
     # ----------------- FILE OPERATIONS -----------------
+    def _reset_bookmark_filter(self):
+        """Clear bookmark filter state (does NOT repopulate the table)."""
+        self._bookmark_filter_active = False
+        self._bookmark_filter_title = ""
+        self._bookmark_filter_indices = []
+        self.bookmark_filter_action.setChecked(False)
+        self.bookmark_filter_action.setText("View Only &From Bookmark")
+
     def open_file(self):
         if self.modified:
             reply = QMessageBox.question(
@@ -623,6 +675,7 @@ class MainWindow(QMainWindow):
 
         self.state.file_handler.segments = []
         self.table.setRowCount(0)
+        self._reset_bookmark_filter()
         self.status_label.setText("Loading file...")
         self._ensure_seg_worker()
         self._seg_requested.emit(file_path)
@@ -632,6 +685,7 @@ class MainWindow(QMainWindow):
             return
         self.state.file_handler.segments = []
         self.table.setRowCount(0)
+        self._reset_bookmark_filter()
         self.status_label.setText("Loading file...")
         self._ensure_seg_worker()
         self._seg_requested.emit(file_path)
@@ -658,6 +712,11 @@ class MainWindow(QMainWindow):
 
         source_texts = [seg.get("source_clean", seg["source"]) for seg in segments]
         self.completion_delegate.set_source_texts(source_texts)
+
+        # Update search dialog with new segments
+        if self._search_dialog is not None:
+            self._search_dialog.update_segments(segments)
+            self._search_dialog.update_tm_langs(self.state.tm_sl, self.state.tm_tl)
 
     def get_status_text(self, seg):
         if seg["fuzzy"]:
@@ -793,7 +852,12 @@ class MainWindow(QMainWindow):
         if not self.state.file_handler.segments:
             QMessageBox.warning(self, "No Data", "No file loaded. Open a file first.")
             return
-        ext = os.path.splitext(self.state.file_handler.current_file_path or "")[1].lower()
+        # Use original file extension for save dialog if available
+        orig_ext = getattr(self.state, "_original_file_ext", None)
+        if orig_ext:
+            ext = orig_ext
+        else:
+            ext = os.path.splitext(self.state.file_handler.current_file_path or "")[1].lower()
         ext_filter = f"Translated {ext.upper()} (*{ext})" if ext else "All Files (*)"
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Save Translated File As", f"translated{ext}", ext_filter
@@ -801,7 +865,9 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         try:
-            self.state.file_handler.render_translated(file_path)
+            # Pass original file path for correct rendering (MCAT.DB working format)
+            original_path = getattr(self.state, "_original_file_path", None)
+            self.state.file_handler.render_translated(file_path, original_path=original_path)
             self.status_label.setText(f"Rendered: {os.path.basename(file_path)}")
             QMessageBox.information(self, "Success", f"Translated file saved:\n{file_path}")
         except Exception as e:
@@ -957,6 +1023,46 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.state.settings, self)
         if dlg.exec_() == QDialog.Accepted:
             self._apply_settings()
+
+    # ----------------- SEARCH -----------------
+    def show_search(self):
+        """Show the unified search dialog."""
+        if self._search_dialog is None:
+            self._search_dialog = SearchDialog(
+                self,
+                fetcher=self.search_fetcher,
+                segments=self.state.file_handler.segments,
+                tm_sl=self.state.tm_sl,
+                tm_tl=self.state.tm_tl
+            )
+            self._search_dialog.navigate_to_segment.connect(self.navigate_to_segment)
+            # Connect TM match apply signal
+            self._search_dialog.tm_match_selected = self._apply_tm_match_from_search
+        else:
+            # Update with current segments and languages
+            self._search_dialog.update_segments(self.state.file_handler.segments)
+            self._search_dialog.update_tm_langs(self.state.tm_sl, self.state.tm_tl)
+        
+        self._search_dialog.show()
+        self._search_dialog.raise_()
+        self._search_dialog.activateWindow()
+
+    def navigate_to_segment(self, index: int):
+        """Navigate to a specific segment index in the current file."""
+        if 0 <= index < len(self.state.file_handler.segments):
+            self.table.selectRow(index)
+            self._edit_target_cell(index)
+            self.status_label.setText(f"Navigated to segment {index + 1}")
+
+    def _apply_tm_match_from_search(self, target_text: str):
+        """Apply a TM match from search dialog to current segment."""
+        if self.current_segment_index < 0:
+            return
+        tgt_item = self.table.item(self.current_segment_index, 1)
+        if tgt_item:
+            tgt_item.setText(target_text)
+            self._edit_target_cell(self.current_segment_index)
+            self.status_label.setText("Applied TM match from search")
 
     def _apply_settings(self):
         font = self.table.font()
@@ -1453,6 +1559,244 @@ class MainWindow(QMainWindow):
             last = len(self.state.file_handler.segments) - 1
             self.table.selectRow(last)
             self._edit_target_cell(last)
+
+    # ----------------- CHAPTER VIEW -----------------
+    def show_chapter_view(self):
+        """Open the Chapter View dialog showing file bookmarks."""
+        if not self.state.file_handler.current_file_path:
+            QMessageBox.information(self, "No File",
+                                    "Open a file first to view its bookmarks / chapter headings.")
+            return
+        bookmarks = self.state.file_handler.load_bookmarks()
+        dlg = ChapterViewDialog(bookmarks, self)
+        dlg.exec_()
+
+    # ----------------- VIEW ONLY FROM BOOKMARK -----------------
+    def _toggle_bookmark_filter(self):
+        """Toggle the bookmark-based segment filter on or off."""
+        if self._bookmark_filter_active:
+            # --- disable: restore all segments ---
+            self._restore_all_segments()
+            return
+
+        # --- enable: pick a bookmark, then filter ---
+        if not self.state.file_handler.current_file_path:
+            QMessageBox.information(self, "No File",
+                                    "Open a file first to use bookmark filtering.")
+            self.bookmark_filter_action.setChecked(False)
+            return
+
+        if not self.state.file_handler.segments:
+            QMessageBox.information(self, "No Segments",
+                                    "No segments loaded. Open a file first.")
+            self.bookmark_filter_action.setChecked(False)
+            return
+
+        bookmarks = self.state.file_handler.load_bookmarks()
+        if not bookmarks:
+            QMessageBox.information(self, "No Bookmarks",
+                                    "This file has no bookmarks / chapter headings.\n\n"
+                                    "Bookmark filtering works with PDF outlines and\n"
+                                    "DOCX heading styles (Heading 1, Heading 2, etc.).")
+            self.bookmark_filter_action.setChecked(False)
+            return
+
+        # Show bookmark picker dialog
+        bk_title = self._pick_bookmark(bookmarks)
+        if bk_title is None:
+            # User cancelled
+            self.bookmark_filter_action.setChecked(False)
+            return
+
+        self._filter_segments_by_bookmark(bookmarks, bk_title)
+
+    def _pick_bookmark(self, bookmarks):
+        """Show a dialog letting the user pick a bookmark. Returns its title or None."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select Bookmark")
+        dlg.setMinimumWidth(480)
+        dlg.setMinimumHeight(350)
+        layout = QVBoxLayout(dlg)
+
+        label = QLabel("Select a bookmark to filter segments:")
+        label.setStyleSheet("font-weight: bold; padding: 4px;")
+        layout.addWidget(label)
+
+        list_widget = QListWidget()
+        for bm in bookmarks:
+            level = bm.get("level", 0)
+            indent = "    " * level
+            item = QListWidgetItem(f"{indent}{bm['title']}")
+            item.setData(Qt.UserRole, bm["title"])
+            list_widget.addItem(item)
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("Filter")
+        ok_btn.setToolTip("Show only segments under this bookmark")
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        if dlg.exec_() != QDialog.Accepted or list_widget.currentRow() < 0:
+            return None
+        return list_widget.currentItem().data(Qt.UserRole)
+
+    def _filter_segments_by_bookmark(self, bookmarks, selected_title):
+        """Filter the main table to show only segments under the selected bookmark.
+
+        Determines the page/paragraph range from the selected bookmark to the next
+        one at the same or higher level, then keeps only segments whose source_location
+        falls inside that range.
+        """
+        all_segments = self.state.file_handler.segments
+        if not all_segments:
+            return
+
+        # Find the selected bookmark and its position in the list
+        selected_idx = None
+        for i, bm in enumerate(bookmarks):
+            if bm["title"] == selected_title:
+                selected_idx = i
+                break
+        if selected_idx is None:
+            return
+
+        selected_bm = bookmarks[selected_idx]
+        selected_level = selected_bm.get("level", 0)
+
+        # Determine the range end: the next bookmark at same or higher (lower number) level,
+        # or end of file if this is the last relevant bookmark.
+        range_end_bm = None
+        for i in range(selected_idx + 1, len(bookmarks)):
+            if bookmarks[i].get("level", 0) <= selected_level:
+                range_end_bm = bookmarks[i]
+                break
+
+        # Build the filter based on location type
+        # Check what kind of source locations the segments have
+        sample_loc = None
+        for seg in all_segments:
+            loc = seg.get("source_location", {})
+            if loc:
+                sample_loc = loc
+                break
+
+        if sample_loc is None:
+            # No location info — cannot filter
+            QMessageBox.information(self, "No Location Data",
+                                    "Segments lack location data needed for bookmark filtering.")
+            self.bookmark_filter_action.setChecked(False)
+            return
+
+        filtered_indices = []
+
+        if "page" in sample_loc:
+            # PDF: filter by page number
+            start_page = selected_bm.get("page")
+            if start_page is None:
+                # Fallback: use page of the first segment after the bookmark position
+                QMessageBox.information(self, "Page Unknown",
+                                        "Could not determine the page for this bookmark.")
+                self.bookmark_filter_action.setChecked(False)
+                return
+
+            end_page = range_end_bm.get("page") if range_end_bm else None
+
+            for i, seg in enumerate(all_segments):
+                loc = seg.get("source_location", {})
+                pg = loc.get("page")
+                if pg is None:
+                    continue
+                if end_page is not None:
+                    if start_page <= pg < end_page:
+                        filtered_indices.append(i)
+                else:
+                    if pg >= start_page:
+                        filtered_indices.append(i)
+
+        elif "para_index" in sample_loc or ("type" in sample_loc and sample_loc.get("type") == "paragraph"):
+            # DOCX: filter by paragraph index
+            start_para = selected_bm.get("para_index")
+            if start_para is None:
+                QMessageBox.information(self, "Position Unknown",
+                                        "Could not determine the paragraph position for this bookmark.")
+                self.bookmark_filter_action.setChecked(False)
+                return
+
+            end_para = range_end_bm.get("para_index") if range_end_bm else None
+
+            for i, seg in enumerate(all_segments):
+                loc = seg.get("source_location", {})
+                para_idx = loc.get("index")
+                if para_idx is None:
+                    # Include table cells that come after the start bookmark
+                    # but only if they precede the next bookmark
+                    if loc.get("type") == "table_cell":
+                        if end_para is not None:
+                            # We can't precisely place table cells, so include them
+                            # if they were loaded between these paragraphs.
+                            # A simple heuristic: include all table cells that appear
+                            # in the segments list between paragraph-based segments in range.
+                            filtered_indices.append(i)
+                        else:
+                            filtered_indices.append(i)
+                    continue
+                if end_para is not None:
+                    if start_para <= para_idx < end_para:
+                        filtered_indices.append(i)
+                else:
+                    if para_idx >= start_para:
+                        filtered_indices.append(i)
+        else:
+            # Unknown location type — try a generic index-based approach
+            QMessageBox.information(self, "Unsupported Format",
+                                    "Bookmark filtering is not yet supported for this file format.")
+            self.bookmark_filter_action.setChecked(False)
+            return
+
+        if not filtered_indices:
+            QMessageBox.information(self, "No Segments",
+                                    f"No segments found under bookmark '{selected_title}'.")
+            self.bookmark_filter_action.setChecked(False)
+            return
+
+        # Store filter state
+        self._bookmark_filter_active = True
+        self._bookmark_filter_title = selected_title
+        self._bookmark_filter_indices = filtered_indices
+
+        # Populate table with only filtered segments
+        filtered_segs = [all_segments[i] for i in filtered_indices]
+        self.populate_table(filtered_segs)
+        if filtered_segs:
+            self.table.selectRow(0)
+
+        self.bookmark_filter_action.setChecked(True)
+        self.bookmark_filter_action.setText(f"View Only From Bookmark: {selected_title}")
+        self.status_label.setText(
+            f"Bookmark filter ON: '{selected_title}' — showing {len(filtered_segs)} "
+            f"of {len(all_segments)} segments"
+        )
+
+    def _restore_all_segments(self):
+        """Clear the bookmark filter and show all segments."""
+        all_segments = self.state.file_handler.segments
+        self.populate_table(all_segments)
+        if all_segments:
+            self.table.selectRow(0)
+
+        self._bookmark_filter_active = False
+        self._bookmark_filter_title = ""
+        self._bookmark_filter_indices = []
+
+        self.bookmark_filter_action.setChecked(False)
+        self.bookmark_filter_action.setText("View Only &From Bookmark")
+        self.status_label.setText("Bookmark filter OFF — showing all segments")
 
     def show_shortcuts(self):
         dlg = ShortcutsDialog(self)

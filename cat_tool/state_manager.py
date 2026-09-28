@@ -1,7 +1,7 @@
 """Application state manager — owns backends, project state, DB operations."""
 import os
 
-from cat_tool.file_handler import CATFileHandler, convert_to_po
+from cat_tool.file_handler import CATFileHandler, convert_to_po, convert_to_mcatdb
 from cat_tool.tm import TranslationMemory
 from cat_tool.glossary import Glossary
 from cat_tool.project import Project
@@ -36,6 +36,8 @@ class AppState:
         self.segmentation_rules = [dict(r) for r in DEFAULT_RULES]
         self.current_segment_index = -1
         self.modified = False
+        self._original_file_ext = None
+        self._original_file_path = None
         self._load_segmentation_rules()
 
     # ---- property helpers ----
@@ -120,6 +122,8 @@ class AppState:
         self.file_handler = CATFileHandler()
         self.current_segment_index = -1
         self.modified = False
+        self._original_file_ext = None
+        self._original_file_path = None
         return proj_name
 
     def save_project(self):
@@ -157,17 +161,20 @@ class AppState:
         if not os.path.exists(file_path):
             return None, "", False, f"Source file not found:\n{file_path}"
         ext = os.path.splitext(file_path)[1].lower()
-        is_po = ext in (".po", ".pot")
+        is_mcatdb = ext == ".mcat.db"
         try:
-            if is_po:
+            if is_mcatdb:
                 self.file_handler.load_file(file_path)
+                label = os.path.basename(file_path)
             else:
-                po_path = file_path + ".po"
-                convert_to_po(file_path, po_path)
-                self.file_handler.load_file(po_path)
-            label = os.path.basename(file_path)
-            if not is_po:
-                label += "  (auto-converted to PO)"
+                # Convert to MCAT.DB as working format (fast, low memory)
+                mcatdb_path = file_path + ".mcat.db"
+                convert_to_mcatdb(file_path, mcatdb_path)
+                self.file_handler.load_file(mcatdb_path)
+                # Store original extension for rendering back
+                self._original_file_ext = ext
+                self._original_file_path = file_path
+                label = os.path.basename(file_path) + "  (MCAT.DB working format)"
             return self.file_handler.segments, label, True, None
         except Exception as e:
             return None, "", False, str(e)

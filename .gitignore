@@ -1,10 +1,80 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-.pytest_cache/
-dist/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
 build/
+dist/
+*.egg-info/
+*.spec
+
+# Installer output
+Output/
+*.exe
+*.msi
+
+# Virtual environments
+venv/
+env/
+.env
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.coverage.*
+coverage.xml
+
+# Type checking
+.mypy_cache/
+*.pyc
+
+# Data files (local databases)
 *.db
+*.db-journal
+!cat_tool/data/*.db
+
+# User settings / local config
+settings.json
 recent_projects.json
-.opencode/
-mcat_setup.exe
+segmentation_rules/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+.mcat_tmp_*
+
+# Build artifacts
+*.pkg
+*.toc
+*.pyz
+base_library.zip
+
+# Knowledge graph (generated)
+knowledge_graph.json
+knowledge_graph.md
+
+# Test scripts (local)
+_test_*.py
+
+# Profiling
+*.prof
+profile_segmentation.py
+
+# Generated reports
 mcat_codebase_report.pdf

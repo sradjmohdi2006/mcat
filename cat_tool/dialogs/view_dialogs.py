@@ -42,6 +42,8 @@ class ShortcutsDialog(QDialog):
             ("Ctrl+Home", "Go to First Segment"),
             ("Ctrl+End", "Go to Last Segment"),
             ("Ctrl+Shift+Q", "Quality Assurance Check"),
+            ("Ctrl+Shift+V", "Chapter View"),
+            ("Ctrl+Shift+B", "View Only From Bookmark"),
             ("F1 / Ctrl+Shift+H", "Show Keyboard Shortcuts"),
         ]
 
@@ -218,3 +220,129 @@ class TagViewDialog(QDialog):
         old = cell_item.text()
         new = old + ph
         cell_item.setText(new)
+
+
+class ChapterViewDialog(QDialog):
+    """Displays file bookmarks in a two-column ST (Source Text) / TT (Translator Tool) table.
+
+    If the loaded file has bookmarks (PDF outlines or DOCX headings), their titles
+    are shown in the ST column.  The TT column is empty and editable so the user can
+    type translated chapter titles alongside the originals.
+    """
+
+    def __init__(self, bookmarks, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Chapter View")
+        self.setMinimumSize(650, 420)
+        self._bookmarks = bookmarks
+        self.init_ui()
+
+    # ------------------------------------------------------------------
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        if not self._bookmarks:
+            layout.addWidget(QLabel("This file has no bookmarks / chapter headings."))
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.accept)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            btn_row.addWidget(close_btn)
+            layout.addLayout(btn_row)
+            return
+
+        summary = QLabel(
+            f"Found {len(self._bookmarks)} bookmark(s) in this file."
+        )
+        summary.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        layout.addWidget(summary)
+
+        # ---- two-column table: ST | TT ----
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["ST", "TT"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setRowCount(len(self._bookmarks))
+
+        for i, bm in enumerate(self._bookmarks):
+            # Indent title based on nesting level
+            level = bm.get("level", 0)
+            indent = "    " * level
+            title = bm.get("title", "")
+
+            # ST column – read-only original bookmark title
+            st_item = QTableWidgetItem(f"{indent}{title}")
+            st_item.setFlags(st_item.flags() & ~Qt.ItemIsEditable)
+            # Visual distinction for deeper levels
+            if level > 0:
+                st_item.setForeground(QColor("#b0b0b8"))
+            else:
+                st_item.setForeground(QColor("#e0e0e8"))
+            self.table.setItem(i, 0, st_item)
+
+            # TT column – editable for the translator
+            tt_item = QTableWidgetItem("")
+            tt_item.setFlags(tt_item.flags() | Qt.ItemIsEditable)
+            self.table.setItem(i, 1, tt_item)
+
+        layout.addWidget(self.table)
+
+        # ---- bottom buttons ----
+        btn_row = QHBoxLayout()
+
+        copy_btn = QPushButton("Copy ST to TT")
+        copy_btn.setToolTip("Copy all source bookmark titles into the TT column as a starting point")
+        copy_btn.clicked.connect(self._copy_st_to_tt)
+
+        export_btn = QPushButton("Export...")
+        export_btn.setToolTip("Export the bookmark table to a CSV file")
+        export_btn.clicked.connect(self._export_csv)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(export_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    # ------------------------------------------------------------------
+    def _copy_st_to_tt(self):
+        """Populate every TT cell with the corresponding ST value."""
+        for row in range(self.table.rowCount()):
+            st_item = self.table.item(row, 0)
+            tt_item = self.table.item(row, 1)
+            if st_item and tt_item:
+                # Strip leading indentation for the translation
+                tt_item.setText(st_item.text().lstrip())
+
+    def _export_csv(self):
+        """Export the ST / TT table to a CSV file."""
+        import csv
+        from PyQt5.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Chapter View as CSV", "chapter_view.csv",
+            "CSV Files (*.csv);;All Files (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["ST", "TT"])
+                for row in range(self.table.rowCount()):
+                    st = self.table.item(row, 0).text() if self.table.item(row, 0) else ""
+                    tt = self.table.item(row, 1).text() if self.table.item(row, 1) else ""
+                    writer.writerow([st, tt])
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Export Complete",
+                                    f"Chapter view exported to:\n{path}")
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Export Error", str(e))

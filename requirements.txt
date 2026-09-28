@@ -1,0 +1,19 @@
+# Core dependencies
+PyQt5>=5.15.9
+rapidfuzz>=3.5.0
+fastembed>=0.3.0
+sqlite-vec>=0.1.6
+spylls>=0.5.0
+numpy>=1.24.0
+
+# File format handlers
+python-docx>=1.1.0
+openpyxl>=3.1.0
+python-pptx>=1.0.0
+pymupdf>=1.23.0
+odfpy>=1.4.1
+translate-toolkit>=3.10.0
+
+# Utilities
+lxml>=4.9.0
+chardet>=5.0.0

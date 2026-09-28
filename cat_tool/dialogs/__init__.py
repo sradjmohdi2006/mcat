@@ -56,12 +56,14 @@ FILE_FILTER = (
 
 from cat_tool.dialogs.glossary_dialogs import GlossaryDialog, LangDialog
 from cat_tool.dialogs.project_dialogs import NewProjectDialog, ProjectSettingsDialog
-from cat_tool.dialogs.view_dialogs import ShortcutsDialog, QADialog, TagViewDialog
+from cat_tool.dialogs.view_dialogs import ShortcutsDialog, QADialog, TagViewDialog, ChapterViewDialog
 from cat_tool.dialogs.spellcheck_dialog import SpellCheckDialog
 from cat_tool.dialogs.settings_dialog import SettingsDialog
+from cat_tool.dialogs.search_dialog import SearchDialog
 
 __all__ = [
     "GlossaryDialog", "LangDialog", "NewProjectDialog", "ProjectSettingsDialog",
     "ShortcutsDialog", "QADialog", "SpellCheckDialog", "SettingsDialog", "TagViewDialog",
+    "ChapterViewDialog", "SearchDialog",
     "LANGUAGES", "fill_lang_combo", "FILE_FILTER",
 ]

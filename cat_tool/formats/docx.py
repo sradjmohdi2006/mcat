@@ -45,3 +45,27 @@ class DocxHandler:
                             if target:
                                 cell.text = target
         doc.save(output_path)
+
+    def load_bookmarks(self, file_path):
+        """Extract heading paragraphs as bookmarks from a DOCX file."""
+        from docx import Document
+        bookmarks = []
+        try:
+            doc = Document(file_path)
+            heading_levels = {"Heading 1": 0, "Heading 2": 1, "Heading 3": 2,
+                              "Heading 4": 3, "Heading 5": 4, "Heading 6": 5}
+            for i, para in enumerate(doc.paragraphs):
+                style_name = para.style.name if para.style else ""
+                if style_name.startswith("Heading"):
+                    level = heading_levels.get(style_name, 0)
+                    title = para.text.strip()
+                    if title:
+                        bookmarks.append({
+                            "title": title,
+                            "level": level,
+                            "page": None,
+                            "para_index": i,
+                        })
+        except Exception:
+            pass
+        return bookmarks
