@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Manual segmentation**:
+  - New Project option **Segment this project manually** skips automatic segmentation and opens a Naming phase
+  - Read-only document view for defining unit starts and ends on words or punctuation
+  - `Set Unit Start` / `Set Unit End` via context menu, `Shift+F10`, Menu key, or keyboard shortcuts
+  - `Split` commits marked units; `Split All` also creates units from every remaining gap (trimmed and split at block boundaries)
+  - Finished segmentation is locked by default; **Edit Segmentation** warns before changing existing rows
+  - Units, targets, and lock state persist in the project file so translations survive reopening
+- **Translation memory and term base import**:
+  - Import TMX translation units into the translation memory
+  - Import TMX files into the glossary
+  - Import TBX term bases into the glossary, with definitions and language detection
+  - Batch import multiple TMX/TBX files at once, with an add/remove review list
+  - Detect TMX files that contain only single-word entries and offer to store them as glossary terms instead of translation memory units
+- **Optional Earth-observation data sources** (`eo_sources/`, see `EO_SOURCES.md`):
+  - Copernicus Data Space Ecosystem: OData/STAC Sentinel-1 search, OAuth2 download, WMS/WMTS capabilities
+  - NASA: APOD, EPIC, Earth imagery, Mars rover photos, GIBS capabilities, CMR metadata
+  - Google Maps: geocoding, directions, elevation and time zone with XML output
+  - Common XML layer that normalises JSON, XML and image-backed APIs into one document shape
 - **Unified Search System** (`Ctrl+Shift+F`): Search across 4 sources simultaneously:
   - In-Memory segments (currently loaded file)
   - TM Sources (translation memory source segments)

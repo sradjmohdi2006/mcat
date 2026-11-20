@@ -1022,5 +1022,571 @@ class TestGlossaryAdditional(unittest.TestCase):
         self.assertEqual(header.get("srclang"), "fr")
 
 
+class TestTmxTbxImport(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmp.name, "glossary.db")
+        from cat_tool.glossary import Glossary
+        self.gl = Glossary(self.db_path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, name, content):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
+    def test_is_single_word(self):
+        from cat_tool.tmx_utils import is_single_word
+        self.assertTrue(is_single_word("hello"))
+        self.assertTrue(is_single_word("châle"))
+        self.assertTrue(is_single_word("e-mail"))
+        self.assertFalse(is_single_word("hello world"))
+        self.assertFalse(is_single_word(""))
+        self.assertFalse(is_single_word(None))
+
+    def test_peek_tmx_detects_term_like_file(self):
+        path = self._write("terms.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en" datatype="plaintext"/>
+  <body>
+    <tu><tuv xml:lang="en"><seg>hello</seg></tuv><tuv xml:lang="es"><seg>hola</seg></tuv></tu>
+    <tu><tuv xml:lang="en"><seg>cat</seg></tuv><tuv xml:lang="es"><seg>gato</seg></tuv></tu>
+  </body>
+</tmx>""")
+        info = self.gl.peek_tmx(path)
+        self.assertEqual(info["count"], 2)
+        self.assertEqual(info["single_word_count"], 2)
+        self.assertTrue(info["is_term_like"])
+
+    def test_peek_tmx_multiword_is_not_term_like(self):
+        path = self._write("memory.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu><tuv xml:lang="en"><seg>hello world</seg></tuv><tuv xml:lang="es"><seg>hola mundo</seg></tuv></tu>
+    <tu><tuv xml:lang="en"><seg>cat</seg></tuv><tuv xml:lang="es"><seg>gato</seg></tuv></tu>
+  </body>
+</tmx>""")
+        info = self.gl.peek_tmx(path)
+        self.assertEqual(info["single_word_count"], 1)
+        self.assertFalse(info["is_term_like"])
+
+    def test_tmx_import_into_translation_memory(self):
+        from cat_tool.tm import TranslationMemory
+        path = self._write("memory.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu><tuv xml:lang="en"><seg>Hello world</seg></tuv><tuv xml:lang="es"><seg>Hola mundo</seg></tuv></tu>
+  </body>
+</tmx>""")
+        tm = TranslationMemory(os.path.join(self.tmp.name, "tm.db"))
+        count = tm.import_tmx(path)
+        self.assertEqual(count, 1)
+        matches = tm.get_fuzzy_matches("Hello world")
+        self.assertEqual(matches[0]["target"], "Hola mundo")
+
+    def test_tmx_inline_tags_and_regional_languages(self):
+        from cat_tool.tmx_utils import parse_tmx
+        path = self._write("trados.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en-US"/>
+  <body>
+    <tu>
+      <tuv xml:lang="en-US"><seg>Open <bpt i="1">&lt;b&gt;</bpt>file<ept i="1">&lt;/b&gt;</ept></seg></tuv>
+      <tuv xml:lang="es-ES"><seg>Abrir <bpt i="1">&lt;b&gt;</bpt>archivo<ept i="1">&lt;/b&gt;</ept></seg></tuv>
+    </tu>
+  </body>
+</tmx>""")
+        units, meta = parse_tmx(path, source_lang="en")
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0]["source"], "Open <b>file</b>")
+        self.assertEqual(units[0]["target"], "Abrir <b>archivo</b>")
+        self.assertEqual(units[0]["source_lang"], "en-US")
+        self.assertEqual(units[0]["target_lang"], "es-ES")
+
+    def test_import_tbx_into_glossary(self):
+        path = self._write("terms.tbx", """<?xml version="1.0" encoding="UTF-8"?>
+<tbx version="2" xml:lang="en">
+  <tbxHeader/>
+  <text><body>
+    <termEntry id="1">
+      <langSet xml:lang="en">
+        <tig>
+          <term>computer</term>
+          <descrip type="definition">A programmable machine.</descrip>
+        </tig>
+      </langSet>
+      <langSet xml:lang="fr">
+        <tig><term>ordinateur</term></tig>
+      </langSet>
+    </termEntry>
+    <termEntry id="2">
+      <langSet xml:lang="en"><tig><term>mouse</term></tig></langSet>
+      <langSet xml:lang="fr"><tig><term>souris</term></tig></langSet>
+    </termEntry>
+  </body></text>
+</tbx>""")
+        info = self.gl.peek_tbx(path)
+        self.assertEqual(info["count"], 2)
+        self.assertEqual(info["source_lang"], "en")
+
+        count = self.gl.import_tbx(path, source_lang="en", target_lang="fr")
+        self.assertEqual(count, 2)
+        terms = {t["source"]: t for t in self.gl.get_all_terms()}
+        self.assertEqual(terms["computer"]["target"], "ordinateur")
+        self.assertEqual(terms["computer"]["source_lang"], "en")
+        self.assertEqual(terms["computer"]["target_lang"], "fr")
+        self.assertIn("programmable", terms["computer"]["description"])
+
+    def test_tbx_with_only_one_language_is_skipped(self):
+        from cat_tool.tmx_utils import parse_tbx
+        path = self._write("mono.tbx", """<?xml version="1.0" encoding="UTF-8"?>
+<tbx version="2" xml:lang="en">
+  <text><body>
+    <termEntry id="1">
+      <langSet xml:lang="en"><tig><term>lonely</term></tig></langSet>
+    </termEntry>
+  </body></text>
+</tbx>""")
+        terms, meta = parse_tbx(path)
+        self.assertEqual(terms, [])
+        self.assertEqual(meta["count"], 0)
+
+    def test_parse_tmx_missing_file_raises(self):
+        from cat_tool.tmx_utils import parse_tmx
+        with self.assertRaises(FileNotFoundError):
+            parse_tmx(os.path.join(self.tmp.name, "missing.tmx"))
+
+    def test_parse_tbx_missing_file_raises(self):
+        from cat_tool.tmx_utils import parse_tbx
+        with self.assertRaises(FileNotFoundError):
+            parse_tbx(os.path.join(self.tmp.name, "missing.tbx"))
+
+    def test_parse_tmx_without_header(self):
+        from cat_tool.tmx_utils import parse_tmx
+        path = self._write("noheader.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <body>
+    <tu><tuv xml:lang="fr"><seg>Bonjour</seg></tuv><tuv xml:lang="en"><seg>Hello</seg></tuv></tu>
+  </body>
+</tmx>""")
+        units, meta = parse_tmx(path)
+        self.assertEqual(meta["source_lang"], "")
+        self.assertEqual(units[0]["source"], "Bonjour")
+        self.assertEqual(units[0]["target"], "Hello")
+
+    def test_parse_tmx_explicit_target_language(self):
+        from cat_tool.tmx_utils import parse_tmx
+        path = self._write("multi_target.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu>
+      <tuv xml:lang="en"><seg>Hello</seg></tuv>
+      <tuv xml:lang="es"><seg>Hola</seg></tuv>
+      <tuv xml:lang="fr"><seg>Bonjour</seg></tuv>
+    </tu>
+  </body>
+</tmx>""")
+        units, meta = parse_tmx(path, target_lang="fr")
+        self.assertEqual(units[0]["target"], "Bonjour")
+        self.assertEqual(units[0]["target_lang"], "fr")
+        self.assertEqual(meta["target_lang"], "fr")
+
+    def test_parse_tmx_multiple_targets_are_reported(self):
+        from cat_tool.tmx_utils import parse_tmx
+        path = self._write("multi_targets.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu>
+      <tuv xml:lang="en"><seg>Hello</seg></tuv>
+      <tuv xml:lang="es"><seg>Hola</seg></tuv>
+      <tuv xml:lang="fr"><seg>Bonjour</seg></tuv>
+    </tu>
+  </body>
+</tmx>""")
+        _, meta = parse_tmx(path)
+        self.assertIn("es", meta["target_lang"])
+        self.assertIn("fr", meta["target_lang"])
+
+    def test_parse_tmx_skips_units_without_a_pair(self):
+        from cat_tool.tmx_utils import parse_tmx
+        path = self._write("single_tuv.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu><tuv xml:lang="en"><seg>Hello</seg></tuv></tu>
+    <tu><tuv xml:lang="en"><seg></seg></tuv><tuv xml:lang="es"><seg>Hola</seg></tuv></tu>
+  </body>
+</tmx>""")
+        units, meta = parse_tmx(path)
+        self.assertEqual(units, [])
+        self.assertEqual(meta["count"], 0)
+
+    def test_namespaced_tmx_is_parsed(self):
+        from cat_tool.tmx_utils import parse_tmx
+        path = self._write("namespaced.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx xmlns="urn:example:tmx" version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu><tuv xml:lang="en"><seg>Hello</seg></tuv><tuv xml:lang="es"><seg>Hola</seg></tuv></tu>
+  </body>
+</tmx>""")
+        units, _ = parse_tmx(path)
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0]["target"], "Hola")
+
+    def test_parse_tbx_header_source_language(self):
+        from cat_tool.tmx_utils import parse_tbx
+        path = self._write("header.tbx", """<?xml version="1.0" encoding="UTF-8"?>
+<tbx version="2">
+  <tbxHeader srclang="de"/>
+  <text><body>
+    <termEntry id="1">
+      <langSet xml:lang="de"><tig><term>Haus</term></tig></langSet>
+      <langSet xml:lang="en"><tig><term>house</term></tig></langSet>
+    </termEntry>
+  </body></text>
+</tbx>""")
+        terms, meta = parse_tbx(path)
+        self.assertEqual(meta["source_lang"], "de")
+        self.assertEqual(terms[0]["source"], "Haus")
+        self.assertEqual(terms[0]["target"], "house")
+
+    def test_parse_tbx_explicit_target_language(self):
+        from cat_tool.tmx_utils import parse_tbx
+        path = self._write("explicit_target.tbx", """<?xml version="1.0" encoding="UTF-8"?>
+<tbx version="2" xml:lang="en">
+  <text><body>
+    <termEntry id="1">
+      <langSet xml:lang="en"><tig><term>house</term></tig></langSet>
+      <langSet xml:lang="es"><tig><term>casa</term></tig></langSet>
+      <langSet xml:lang="fr"><tig><term>maison</term></tig></langSet>
+    </termEntry>
+  </body></text>
+</tbx>""")
+        terms, meta = parse_tbx(path, target_lang="fr")
+        self.assertEqual(terms[0]["target"], "maison")
+        self.assertEqual(terms[0]["target_lang"], "fr")
+        self.assertEqual(meta["target_lang"], "fr")
+
+    def test_namespaced_tbx_is_parsed(self):
+        from cat_tool.tmx_utils import parse_tbx
+        path = self._write("namespaced.tbx", """<?xml version="1.0" encoding="UTF-8"?>
+<tbx xmlns="urn:example:tbx" version="2" xml:lang="en">
+  <text><body>
+    <termEntry id="1">
+      <langSet xml:lang="en"><tig><term>house</term></tig></langSet>
+      <langSet xml:lang="es"><tig><term>casa</term></tig></langSet>
+    </termEntry>
+  </body></text>
+</tbx>""")
+        terms, _ = parse_tbx(path)
+        self.assertEqual(len(terms), 1)
+        self.assertEqual(terms[0]["target"], "casa")
+
+    def test_import_collection_tmx_creates_collection(self):
+        path = self._write("collection.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu><tuv xml:lang="en"><seg>house</seg></tuv><tuv xml:lang="es"><seg>casa</seg></tuv></tu>
+  </body>
+</tmx>""")
+        count, coll_id = self.gl.import_collection_tmx(path)
+        self.assertEqual(count, 1)
+        self.assertIsNotNone(coll_id)
+        names = [c["name"] for c in self.gl.get_all_collections()]
+        self.assertIn("collection", names)
+
+    def test_import_collection_tmx_empty_file_returns_none(self):
+        path = self._write("empty_collection.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4"><header srclang="en"/><body/></tmx>""")
+        count, coll_id = self.gl.import_collection_tmx(path)
+        self.assertEqual(count, 0)
+        self.assertIsNone(coll_id)
+
+    def test_import_collection_tmx_duplicate_name_returns_none(self):
+        path = self._write("duplicate.tmx", """<?xml version="1.0" encoding="UTF-8"?>
+<tmx version="1.4">
+  <header srclang="en"/>
+  <body>
+    <tu><tuv xml:lang="en"><seg>house</seg></tuv><tuv xml:lang="es"><seg>casa</seg></tuv></tu>
+  </body>
+</tmx>""")
+        self.gl.create_collection("duplicate")
+        count, coll_id = self.gl.import_collection_tmx(path)
+        self.assertEqual(count, 0)
+        self.assertIsNone(coll_id)
+
+    def test_tm_import_tmx_missing_file_raises(self):
+        from cat_tool.tm import TranslationMemory
+        tm = TranslationMemory(os.path.join(self.tmp.name, "tm.db"))
+        with self.assertRaises(FileNotFoundError):
+            tm.import_tmx(os.path.join(self.tmp.name, "missing.tmx"))
+
+
+class TestTranslationMemoryMore(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        from cat_tool.tm import TranslationMemory
+        self.tm = TranslationMemory(os.path.join(self.tmp.name, "tm.db"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_add_translation_rejects_empty_values(self):
+        self.assertIsNone(self.tm.add_translation("", "Hola"))
+        self.assertIsNone(self.tm.add_translation("Hello", "   "))
+
+    def test_add_translation_updates_existing_source(self):
+        self.tm.add_translation("Hello", "Hola")
+        self.tm.add_translation("Hello", "Buenas")
+        matches = self.tm.get_fuzzy_matches("Hello")
+        self.assertEqual(matches[0]["target"], "Buenas")
+
+    def test_fuzzy_matches_filter_by_language(self):
+        self.tm.add_translation("Hello", "Hola", "en", "es")
+        self.tm.add_translation("Hello there", "Hola amigo", "en", "es")
+        self.assertEqual(
+            self.tm.get_fuzzy_matches("Hello", source_lang="fr"), [])
+        self.assertEqual(
+            self.tm.get_fuzzy_matches("Hello", target_lang="fr"), [])
+        self.assertGreater(
+            len(self.tm.get_fuzzy_matches("Hello", source_lang="en")), 0)
+
+    def test_fuzzy_matches_respects_limit(self):
+        for i in range(5):
+            self.tm.add_translation(f"Hello number {i}", f"Hola {i}")
+        matches = self.tm.get_fuzzy_matches("Hello", min_score=0, limit=2)
+        self.assertEqual(len(matches), 2)
+
+    def test_fuzzy_cache_is_cleared_by_new_translation(self):
+        self.tm.add_translation("Hello", "Hola")
+        first = self.tm.get_fuzzy_matches("Hello")
+        self.tm.add_translation("Hello", "Buenas")
+        second = self.tm.get_fuzzy_matches("Hello")
+        self.assertEqual(first[0]["target"], "Hola")
+        self.assertEqual(second[0]["target"], "Buenas")
+
+    def test_cache_eviction_keeps_cache_bounded(self):
+        self.tm._cache_max = 1
+        self.tm.add_translation("Hello", "Hola")
+        self.tm.get_fuzzy_matches("Hello")
+        self.tm.get_fuzzy_matches("Hell")
+        self.assertLessEqual(len(self.tm._match_cache), 1)
+
+    def test_clear_removes_all_translations(self):
+        self.tm.add_translation("Hello", "Hola")
+        self.tm.clear()
+        self.assertEqual(self.tm.get_fuzzy_matches("Hello"), [])
+
+    def test_semantic_matches_empty_query(self):
+        self.assertEqual(self.tm.get_semantic_matches(""), [])
+
+    def test_semantic_matches_without_model_returns_empty(self):
+        self.tm._embedding_model = False
+        self.assertEqual(self.tm.get_semantic_matches("Hello"), [])
+
+    def test_compute_embedding_without_text(self):
+        self.tm._embedding_model = False
+        self.assertIsNone(self.tm._compute_embedding(""))
+        self.assertIsNone(self.tm._compute_embedding("   "))
+
+
+class TestGlossaryCollections(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        from cat_tool.glossary import Glossary
+        self.gl = Glossary(os.path.join(self.tmp.name, "glossary.db"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_create_collection_and_duplicate(self):
+        coll_id = self.gl.create_collection("  Legal  ", " contracts ")
+        self.assertIsNotNone(coll_id)
+        self.assertIsNone(self.gl.create_collection("Legal"))
+        collections = self.gl.get_all_collections()
+        self.assertEqual(collections[0]["name"], "Legal")
+        self.assertEqual(collections[0]["description"], "contracts")
+
+    def test_add_and_remove_collection_terms(self):
+        coll_id = self.gl.create_collection("Legal")
+        self.gl.add_term("contract", "contrato", source_lang="en",
+                         target_lang="es")
+        self.assertTrue(self.gl.add_term_to_collection(coll_id, " contract "))
+        self.assertFalse(self.gl.add_term_to_collection(coll_id, "contract"))
+        terms = self.gl.get_collection_terms(coll_id)
+        self.assertEqual(terms[0]["source"], "contract")
+        self.assertEqual(terms[0]["source_lang"], "en")
+        self.gl.remove_term_from_collection(coll_id, "contract")
+        self.assertEqual(self.gl.get_collection_terms(coll_id), [])
+
+    def test_delete_collection_removes_links(self):
+        coll_id = self.gl.create_collection("Legal")
+        self.gl.add_term("contract", "contrato")
+        self.gl.add_term_to_collection(coll_id, "contract")
+        self.gl.delete_collection(coll_id)
+        self.assertEqual(self.gl.get_all_collections(), [])
+        self.assertEqual(self.gl.get_collection_terms(coll_id), [])
+
+    def test_export_collection_tmx_round_trip(self):
+        coll_id = self.gl.create_collection("Legal")
+        self.gl.add_term("contract", "contrato", "A binding agreement.",
+                         "en", "es")
+        self.gl.add_term_to_collection(coll_id, "contract")
+        path = os.path.join(self.tmp.name, "legal.tmx")
+        count = self.gl.export_collection_tmx(coll_id, path)
+        self.assertEqual(count, 1)
+        from cat_tool.tmx_utils import parse_tmx
+        units, meta = parse_tmx(path)
+        self.assertEqual(units[0]["source"], "contract")
+        self.assertEqual(units[0]["target"], "contrato")
+        self.assertEqual(meta["source_lang"], "en")
+
+    def test_export_empty_collection_returns_zero(self):
+        coll_id = self.gl.create_collection("Empty")
+        path = os.path.join(self.tmp.name, "empty.tmx")
+        self.assertEqual(self.gl.export_collection_tmx(coll_id, path), 0)
+        self.assertFalse(os.path.exists(path))
+
+    def test_export_glossary_tmx_round_trip(self):
+        self.gl.add_term("house", "casa", "A home.", "en", "es")
+        path = os.path.join(self.tmp.name, "glossary.tmx")
+        self.assertEqual(self.gl.export_tmx(path), 1)
+        from cat_tool.tmx_utils import parse_tmx
+        units, _ = parse_tmx(path)
+        self.assertEqual(units[0]["source"], "house")
+        self.assertEqual(units[0]["target"], "casa")
+
+    def test_export_empty_glossary_returns_zero(self):
+        path = os.path.join(self.tmp.name, "empty.tmx")
+        self.assertEqual(self.gl.export_tmx(path), 0)
+        self.assertFalse(os.path.exists(path))
+
+    def test_add_term_error_is_handled(self):
+        from unittest.mock import MagicMock, patch
+        cursor = MagicMock()
+        cursor.execute.side_effect = RuntimeError("boom")
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        with patch("cat_tool.glossary.sqlite3.connect",
+                   return_value=conn):
+            self.gl.add_term("house", "casa")  # must not raise
+        conn.close.assert_called_once()
+
+    def test_check_segment_filters_by_language(self):
+        self.gl.add_term("cat", "gato", source_lang="en", target_lang="es")
+        self.assertEqual(
+            self.gl.check_segment("the cat", source_lang="fr"), [])
+        self.assertEqual(
+            self.gl.check_segment("the cat", target_lang="fr"), [])
+        self.assertEqual(
+            len(self.gl.check_segment("the cat", source_lang="en",
+                                      target_lang="es")), 1)
+
+    def test_check_segment_ignores_terms_without_words(self):
+        self.gl.add_term("...", "...")
+        self.assertEqual(self.gl.check_segment("anything here"), [])
+
+
+class TestExporters(unittest.TestCase):
+    SEGMENTS = [
+        {"source": "Hello", "target": "Hola", "source_clean": "Hello",
+         "target_clean": "Hola", "fuzzy": False},
+        {"source": "Bye", "target": "", "source_clean": "Bye",
+         "target_clean": "", "fuzzy": True},
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_export_docx(self):
+        from cat_tool.exporters import export_docx
+        path = os.path.join(self.tmp.name, "out.docx")
+        export_docx(self.SEGMENTS, path)
+        self.assertTrue(os.path.exists(path))
+        from docx import Document
+        doc = Document(path)
+        table = doc.tables[0]
+        self.assertEqual(table.rows[0].cells[1].text, "Source")
+        self.assertEqual(table.rows[1].cells[1].text, "Hello")
+        self.assertEqual(table.rows[1].cells[2].text, "Hola")
+        self.assertEqual(table.rows[2].cells[2].text, "")
+
+    def test_export_xlsx(self):
+        from cat_tool.exporters import export_xlsx
+        path = os.path.join(self.tmp.name, "out.xlsx")
+        export_xlsx(self.SEGMENTS, path)
+        from openpyxl import load_workbook
+        ws = load_workbook(path).active
+        self.assertEqual(ws["B2"].value, "Hello")
+        self.assertEqual(ws["C2"].value, "Hola")
+        self.assertEqual(ws["D2"].value, "Translated")
+        self.assertEqual(ws["D3"].value, "Fuzzy")
+
+    def test_export_pdf(self):
+        from cat_tool.exporters import export_pdf
+        path = os.path.join(self.tmp.name, "out.pdf")
+        export_pdf(self.SEGMENTS, path)
+        self.assertTrue(os.path.exists(path))
+        self.assertGreater(os.path.getsize(path), 500)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(4), b"%PDF")
+
+
+class TestAppStateStats(unittest.TestCase):
+    def _state(self, segments):
+        from cat_tool.state_manager import AppState
+        state = object.__new__(AppState)
+        handler = type("Handler", (), {"segments": segments})()
+        state.file_handler = handler
+        return state
+
+    def test_compute_stats_without_segments(self):
+        stats = self._state([]).compute_stats()
+        self.assertEqual(stats["total"], 0)
+        self.assertEqual(stats["percent"], 0)
+
+    def test_compute_stats_counts_translated_and_fuzzy(self):
+        segments = [
+            {"source": "one two", "target": "uno dos", "fuzzy": False},
+            {"source": "three", "target": "", "fuzzy": False},
+            {"source": "four five six", "target": "cuatro", "fuzzy": True},
+        ]
+        stats = self._state(segments).compute_stats()
+        self.assertEqual(stats["total"], 3)
+        self.assertEqual(stats["translated"], 1)
+        self.assertEqual(stats["fuzzy"], 1)
+        self.assertEqual(stats["total_words"], 6)
+        self.assertEqual(stats["translated_words"], 2)
+        self.assertEqual(stats["percent"], 33)
+
+    def test_close_project_returns_name_and_resets(self):
+        from cat_tool.state_manager import AppState
+        state = object.__new__(AppState)
+        state.project = type("Project", (), {"name": "demo"})()
+        state.file_handler = None
+        state.current_segment_index = 4
+        state.modified = True
+        state._original_file_ext = ".po"
+        state._original_file_path = "x.po"
+        self.assertEqual(state.close_project(), "demo")
+        self.assertIsNone(state.project)
+        self.assertEqual(state.current_segment_index, -1)
+        self.assertFalse(state.modified)
+        self.assertIsNone(state._original_file_ext)
+        self.assertIsNone(state._original_file_path)
+
+
 if __name__ == "__main__":
     unittest.main()

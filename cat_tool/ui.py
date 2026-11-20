@@ -10,7 +10,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QPushButton, QLabel, QListWidget, QListWidgetItem,
                              QFileDialog, QStatusBar, QProgressBar, QMessageBox,
                              QCheckBox, QDialog, QFormLayout, QLineEdit, QHeaderView,
-                             QComboBox, QDialogButtonBox, QMenu, QScrollArea, QSpinBox)
+                             QComboBox, QDialogButtonBox, QMenu, QScrollArea, QSpinBox,
+                             QStackedWidget)
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QColor, QFont, QKeySequence
 
@@ -18,13 +19,14 @@ from cat_tool.file_handler import CATFileHandler, convert_to_po
 from cat_tool.formats.tag_utils import PH_L, PH_R, extract_all_tags, apply_tags, restore_tags
 from cat_tool import qa
 from cat_tool.state_manager import AppState
-from cat_tool.workers import SegmentationWorker, EmbeddingWorker, FuzzyMatchWorker
+from cat_tool.workers import SegmentationWorker, EmbeddingWorker, FuzzyMatchWorker, SpellWorker
 from cat_tool.search_fetcher import SearchFetcher
+from cat_tool.manual_segmentation_view import ManualSegmentationView
 
 from cat_tool.dialogs import (
-    GlossaryDialog, LangDialog, NewProjectDialog, ProjectSettingsDialog,
-    ShortcutsDialog, QADialog, SpellCheckDialog, SettingsDialog, TagViewDialog,
-    ChapterViewDialog, SearchDialog,
+    GlossaryDialog, LangDialog, MultiFileImportDialog, NewProjectDialog,
+    ProjectSettingsDialog, ShortcutsDialog, QADialog, SpellCheckDialog,
+    SettingsDialog, TagViewDialog, ChapterViewDialog, SearchDialog,
     FILE_FILTER,
 )
 
@@ -160,6 +162,8 @@ class MainWindow(QMainWindow):
     _seg_requested = pyqtSignal(str)
     _emb_requested = pyqtSignal(str, int)
     _fuzzy_requested = pyqtSignal(str, str, str)
+    _spell_check_requested = pyqtSignal(list)
+    _spell_index_requested = pyqtSignal(str, str, str)
 
     def __init__(self):
         super().__init__()
@@ -177,6 +181,10 @@ class MainWindow(QMainWindow):
         self._fuzzy_thread = None
         self._fuzzy_worker = None
         self._pending_fuzzy_source = ""
+        self._spell_thread = None
+        self._spell_worker = None
+        self._spell_check_segments = None
+        self._spell_check_dialog = None
 
         # Search fetcher for unified search
         self.search_fetcher = SearchFetcher(self.state.tm.db_path, self.state.glossary.db_path)
@@ -233,6 +241,33 @@ class MainWindow(QMainWindow):
         self._fuzzy_worker.finished.connect(self._on_fuzzy_matches_ready)
         self._fuzzy_thread.start()
 
+    def _ensure_spell_worker(self):
+        if self._spell_thread is not None:
+            return
+        self._spell_thread = QThread()
+        self._spell_worker = SpellWorker(self.state.spellchecker)
+        self._spell_worker.moveToThread(self._spell_thread)
+        self._spell_check_requested.connect(self._spell_worker.check_segments)
+        self._spell_index_requested.connect(self._spell_worker.index_translation)
+        self._spell_worker.finished.connect(self._on_spell_check_finished)
+        self._spell_worker.error.connect(self._on_spell_worker_error)
+        self._spell_thread.start()
+
+    def _on_spell_check_finished(self, results):
+        self.status_label.setText("Spell check complete.")
+        segments = self._spell_check_segments
+        if not segments:
+            return
+        dlg = SpellCheckDialog(
+            segments, self.state.spellchecker, self, results=results)
+        dlg.correction_made.connect(self._spell_index_requested.emit)
+        self._spell_check_dialog = dlg
+        dlg.exec_()
+        self.populate_table(self.state.file_handler.segments)
+
+    def _on_spell_worker_error(self, message):
+        self.status_label.setText(f"Spell check error: {message}")
+
     def _stop_threads(self):
         if self._seg_thread is not None and self._seg_thread.isRunning():
             self._seg_thread.quit()
@@ -243,6 +278,9 @@ class MainWindow(QMainWindow):
         if self._fuzzy_thread is not None and self._fuzzy_thread.isRunning():
             self._fuzzy_thread.quit()
             self._fuzzy_thread.wait(2000)
+        if self._spell_thread is not None and self._spell_thread.isRunning():
+            self._spell_thread.quit()
+            self._spell_thread.wait(2000)
 
     def cleanup(self):
         self._stop_threads()
@@ -382,6 +420,14 @@ class MainWindow(QMainWindow):
         self.chapter_view_action.setStatusTip("View file bookmarks / chapter headings for translation")
         self.chapter_view_action.triggered.connect(self.show_chapter_view)
 
+        self.manual_seg_action = view_menu.addAction("&Manual Segmentation")
+        self.manual_seg_action.setCheckable(True)
+        self.manual_seg_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        self.manual_seg_action.setStatusTip(
+            "Define translation units in the document text")
+        self.manual_seg_action.triggered.connect(self.toggle_manual_segmentation)
+        self.manual_seg_action.setEnabled(False)
+
         view_menu.addSeparator()
 
         self.bookmark_filter_action = view_menu.addAction("View Only &From Bookmark")
@@ -397,6 +443,10 @@ class MainWindow(QMainWindow):
         import_tm_action.setShortcut(QKeySequence("Ctrl+M"))
         import_tm_action.triggered.connect(self.import_po_to_tm)
 
+        import_tmx_tm_action = tm_menu.addAction("Import &TMX into TM...")
+        import_tmx_tm_action.setStatusTip("Import translation units from a TMX file into the translation memory")
+        import_tmx_tm_action.triggered.connect(self.import_tmx_to_tm)
+
         clear_tm_action = tm_menu.addAction("&Clear TM Database")
         clear_tm_action.triggered.connect(self.clear_tm)
 
@@ -411,6 +461,9 @@ class MainWindow(QMainWindow):
         view_all_action.triggered.connect(self.view_glossary)
 
         glossary_menu.addSeparator()
+        import_tbx_action = glossary_menu.addAction("Import T&BX into Glossary...")
+        import_tbx_action.setStatusTip("Import terms from a TBX term base into the glossary")
+        import_tbx_action.triggered.connect(self.import_tbx_to_glossary)
         import_tmx_action = glossary_menu.addAction("Import &TMX into Glossary...")
         import_tmx_action.triggered.connect(self.import_tmx_to_glossary)
         export_tmx_action = glossary_menu.addAction("E&xport Glossary as TMX...")
@@ -555,7 +608,19 @@ class MainWindow(QMainWindow):
         main_splitter.setStretchFactor(0, 2)
         main_splitter.setStretchFactor(1, 1)
 
-        self.setCentralWidget(main_splitter)
+        self.main_view = main_splitter
+        self.manual_view = ManualSegmentationView(self)
+        self.manual_view.segmentsChanged.connect(
+            self._on_manual_segments_changed)
+        self.manual_view.finished.connect(self._on_manual_finished)
+        self.manual_view.editStarted.connect(self._on_manual_edit_started)
+        self.manual_view.fileChangeRequested.connect(
+            self._open_manual_project_file)
+
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.main_view)
+        self.view_stack.addWidget(self.manual_view)
+        self.setCentralWidget(self.view_stack)
 
         # ----------------- STATUS BAR -----------------
         self.status_bar = QStatusBar()
@@ -759,8 +824,9 @@ class MainWindow(QMainWindow):
         new_text = item.text().strip()
         tags = seg.get("all_tags", [])
         restored = restore_tags(new_text, tags)
+        previous_target = seg["target"]
 
-        if seg["target"] == restored:
+        if previous_target == restored:
             return
 
         seg["target"] = restored
@@ -780,6 +846,9 @@ class MainWindow(QMainWindow):
                 self._touch_model_timer()
                 self._emb_requested.emit(seg["source"], row_id)
 
+        self._ensure_spell_worker()
+        self._spell_index_requested.emit(seg["source"], previous_target, restored)
+
         item.setText(seg["target_clean"])
         self.set_target_cell_style(item, seg)
         self.set_source_cell_style(self.table.item(row, 0), seg)
@@ -788,6 +857,9 @@ class MainWindow(QMainWindow):
         self.update_stats()
 
     def save_file(self):
+        if self.state.is_manual_project:
+            self.save_project()
+            return
         if not self.state.file_handler.current_file_path:
             self.save_file_as()
             return
@@ -867,7 +939,11 @@ class MainWindow(QMainWindow):
         try:
             # Pass original file path for correct rendering (MCAT.DB working format)
             original_path = getattr(self.state, "_original_file_path", None)
-            self.state.file_handler.render_translated(file_path, original_path=original_path)
+            if self.state.is_manual_project:
+                self.state.render_manual_translated(file_path)
+            else:
+                self.state.file_handler.render_translated(
+                    file_path, original_path=original_path)
             self.status_label.setText(f"Rendered: {os.path.basename(file_path)}")
             QMessageBox.information(self, "Success", f"Translated file saved:\n{file_path}")
         except Exception as e:
@@ -1015,9 +1091,10 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     def _spellcheck_segment(self, seg):
-        dlg = SpellCheckDialog([seg], self.state.spellchecker, self)
-        dlg.exec_()
-        self.populate_table(self.state.file_handler.segments)
+        self._ensure_spell_worker()
+        self._spell_check_segments = [seg]
+        self.status_label.setText("Spell checking in background...")
+        self._spell_check_requested.emit([seg])
 
     def show_options(self):
         dlg = SettingsDialog(self.state.settings, self)
@@ -1145,36 +1222,127 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "Invalid Input", "Source and Target cannot be empty.")
 
+    def _ask_import_languages(self, info, format_name="TMX"):
+        """Choose languages for one file in a batch import.
+
+        Files with a clear source and a single target use the detected
+        languages directly.  Missing or ambiguous languages open the
+        language dialog for that file.  Returns ``None`` if cancelled.
+        """
+        sl = info.get("source_lang") or (
+            self.state.project.source_lang if self.state.project else "en")
+        target_values = [
+            value.strip()
+            for value in (info.get("target_lang") or "").split(",")
+            if value.strip()
+        ]
+        tl = target_values[0] if target_values else (
+            self.state.project.target_lang if self.state.project else "")
+        needs_choice = (
+            not info.get("source_lang")
+            or not target_values
+            or len(target_values) > 1
+        )
+        if needs_choice:
+            dlg = LangDialog(sl, tl, info["count"], self,
+                             format_name=format_name)
+            if dlg.exec_() != QDialog.Accepted:
+                return None
+            sl = dlg.src_combo.currentData() or sl
+            tl = dlg.tgt_combo.currentData() or tl
+        return sl or "en", tl
+
+    def _show_batch_import_result(self, label, total, file_count,
+                                  skipped, errors):
+        lines = [f"Imported {total} {label} from {file_count} file(s)."]
+        if skipped:
+            lines.append("Skipped: " + ", ".join(skipped))
+        if errors:
+            lines.append("Errors:")
+            lines.extend(errors[:8])
+            if len(errors) > 8:
+                lines.append(f"...and {len(errors) - 8} more.")
+            QMessageBox.warning(self, "Import Finished", "\n".join(lines))
+        else:
+            QMessageBox.information(self, "Import Complete", "\n".join(lines))
+
+    def _import_tmx_files_to_glossary(self, files):
+        total = 0
+        skipped = []
+        errors = []
+        for path in files:
+            name = os.path.basename(path)
+            try:
+                info = self.state.glossary.peek_tmx(path)
+                if info["count"] == 0:
+                    skipped.append(f"{name} (no term pairs)")
+                    continue
+                langs = self._ask_import_languages(info, "TMX")
+                if langs is None:
+                    skipped.append(f"{name} (cancelled)")
+                    continue
+                source_lang, target_lang = langs
+                total += self.state.glossary.import_tmx(
+                    path, source_lang=source_lang, target_lang=target_lang)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+        self._show_batch_import_result(
+            "terms", total, len(files), skipped, errors)
+
     def import_tmx_to_glossary(self):
-        path, _ = QFileDialog.getOpenFileName(
+        paths, _ = QFileDialog.getOpenFileNames(
             self, "Import TMX into Glossary", "",
             "TMX Files (*.tmx);;All Files (*)")
-        if not path:
+        if not paths:
             return
-        try:
-            info = self.state.glossary.peek_tmx(path)
-            if info["count"] == 0 and not info.get("source_lang"):
-                QMessageBox.information(self, "No Terms",
-                    "No translatable term pairs found in this TMX file.")
-                return
+        dlg = MultiFileImportDialog(
+            self, "Import TMX into Glossary",
+            "TMX Files (*.tmx);;All Files (*)", paths)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        self._import_tmx_files_to_glossary(dlg.files())
+        if self.current_segment_index >= 0:
+            seg = self.state.file_handler.segments[self.current_segment_index]
+            self.update_glossary_matches(seg["source"])
 
-            sl = info["source_lang"] or (self.state.project.source_lang if self.state.project else "en")
-            tl = info["target_lang"] or ""
+    def _import_tbx_files_to_glossary(self, files):
+        total = 0
+        skipped = []
+        errors = []
+        for path in files:
+            name = os.path.basename(path)
+            try:
+                info = self.state.glossary.peek_tbx(path)
+                if info["count"] == 0:
+                    skipped.append(f"{name} (no term pairs)")
+                    continue
+                langs = self._ask_import_languages(info, "TBX")
+                if langs is None:
+                    skipped.append(f"{name} (cancelled)")
+                    continue
+                source_lang, target_lang = langs
+                total += self.state.glossary.import_tbx(
+                    path, source_lang=source_lang, target_lang=target_lang)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+        self._show_batch_import_result(
+            "terms", total, len(files), skipped, errors)
 
-            dlg = LangDialog(sl, tl, info["count"], self)
-            if dlg.exec_() != QDialog.Accepted:
-                return
-
-            source_lang = dlg.src_combo.currentData() or sl
-            target_lang = dlg.tgt_combo.currentData() or tl
-
-            count = self.state.glossary.import_tmx(path, source_lang=source_lang)
-            QMessageBox.information(
-                self, "Import Complete",
-                f"Imported {count} terms from TMX into glossary.\n"
-                f"Source: {source_lang}  |  Target: {target_lang}")
-        except Exception as e:
-            QMessageBox.critical(self, "Import Error", f"Failed to import TMX:\n{e}")
+    def import_tbx_to_glossary(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Import TBX into Glossary", "",
+            "TBX Files (*.tbx);;All Files (*)")
+        if not paths:
+            return
+        dlg = MultiFileImportDialog(
+            self, "Import TBX into Glossary",
+            "TBX Files (*.tbx);;All Files (*)", paths)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        self._import_tbx_files_to_glossary(dlg.files())
+        if self.current_segment_index >= 0:
+            seg = self.state.file_handler.segments[self.current_segment_index]
+            self.update_glossary_matches(seg["source"])
 
     def export_glossary_as_tmx(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1399,25 +1567,49 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def import_collection_tmx(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Collection as TMX", "",
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Import Collections as TMX", "",
             "TMX Files (*.tmx);;All Files (*)")
-        if not path:
+        if not paths:
             return
-        try:
-            count, coll_id = self.state.glossary.import_collection_tmx(path)
-            if coll_id is None:
-                QMessageBox.warning(self, "Import Failed",
-                    "Could not create collection. Name may already exist.")
-                return
-            if count:
-                QMessageBox.information(self, "Import Complete",
-                    f"Imported {count} terms into a new collection.")
-            else:
-                QMessageBox.information(self, "No Terms",
-                    "No translatable term pairs found in that TMX.")
-        except Exception as e:
-            QMessageBox.critical(self, "Import Error", str(e))
+        dlg = MultiFileImportDialog(
+            self, "Import Collections as TMX",
+            "TMX Files (*.tmx);;All Files (*)", paths)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        total_terms = 0
+        collection_count = 0
+        skipped = []
+        errors = []
+        for path in dlg.files():
+            name = os.path.basename(path)
+            try:
+                count, coll_id = self.state.glossary.import_collection_tmx(path)
+                if coll_id is None:
+                    skipped.append(
+                        f"{name} (empty, or collection name already exists)")
+                    continue
+                total_terms += count
+                collection_count += 1
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+
+        lines = [
+            f"Imported {total_terms} terms into {collection_count} "
+            "new collection(s)."
+        ]
+        if skipped:
+            lines.append("Skipped: " + ", ".join(skipped))
+        if errors or skipped:
+            if errors:
+                lines.append("Errors:")
+                lines.extend(errors[:8])
+                if len(errors) > 8:
+                    lines.append(f"...and {len(errors) - 8} more.")
+            QMessageBox.warning(self, "Import Finished", "\n".join(lines))
+        else:
+            QMessageBox.information(self, "Import Complete", "\n".join(lines))
 
     def export_collection_tmx(self):
         collections = self.state.glossary.get_all_collections()
@@ -1532,6 +1724,88 @@ class MainWindow(QMainWindow):
                 self.update_fuzzy_matches(seg["source"])
         except Exception as e:
             QMessageBox.critical(self, "Import Error", str(e))
+
+    def _import_tmx_files_to_tm(self, files):
+        tm_total = 0
+        glossary_total = 0
+        skipped = []
+        errors = []
+        for path in files:
+            name = os.path.basename(path)
+            try:
+                info = self.state.peek_tmx(path)
+                if info["count"] == 0:
+                    skipped.append(f"{name} (no translation units)")
+                    continue
+
+                destination = "tm"
+                if info.get("is_term_like"):
+                    reply = QMessageBox.question(
+                        self, "Term-like TMX Detected",
+                        f"{name} contains only single-word entries "
+                        f"({info['count']} item(s)).\n\n"
+                        "This looks like a glossary/term base rather than a "
+                        "translation memory.\n\n"
+                        "Do you want to save it in the Glossary instead of the "
+                        "Translation Memory?\n\n"
+                        "Cancel skips this file and continues with the rest.",
+                        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                        QMessageBox.Yes)
+                    if reply == QMessageBox.Cancel:
+                        skipped.append(f"{name} (cancelled)")
+                        continue
+                    destination = (
+                        "glossary" if reply == QMessageBox.Yes else "tm")
+
+                langs = self._ask_import_languages(info, "TMX")
+                if langs is None:
+                    skipped.append(f"{name} (cancelled)")
+                    continue
+                source_lang, target_lang = langs
+
+                if destination == "glossary":
+                    glossary_total += self.state.glossary.import_tmx(
+                        path, source_lang=source_lang, target_lang=target_lang)
+                else:
+                    tm_total += self.state.import_tmx_to_tm(
+                        path, source_lang=source_lang, target_lang=target_lang)
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+
+        lines = [
+            f"Imported {tm_total} translation units into the translation memory."
+        ]
+        if glossary_total:
+            lines.append(
+                f"Imported {glossary_total} terms into the glossary.")
+        lines.append(f"Processed {len(files)} file(s).")
+        if skipped:
+            lines.append("Skipped: " + ", ".join(skipped))
+        if errors:
+            lines.append("Errors:")
+            lines.extend(errors[:8])
+            if len(errors) > 8:
+                lines.append(f"...and {len(errors) - 8} more.")
+            QMessageBox.warning(self, "Import Finished", "\n".join(lines))
+        else:
+            QMessageBox.information(self, "Import Complete", "\n".join(lines))
+
+    def import_tmx_to_tm(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Import TMX into Translation Memory", "",
+            "TMX Files (*.tmx);;All Files (*)")
+        if not paths:
+            return
+        dlg = MultiFileImportDialog(
+            self, "Import TMX into Translation Memory",
+            "TMX Files (*.tmx);;All Files (*)", paths)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        self._import_tmx_files_to_tm(dlg.files())
+        if self.current_segment_index >= 0:
+            seg = self.state.file_handler.segments[self.current_segment_index]
+            self.update_fuzzy_matches(seg["source"])
+            self.update_glossary_matches(seg["source"])
 
     def clear_tm(self):
         reply = QMessageBox.question(
@@ -1851,12 +2125,14 @@ class MainWindow(QMainWindow):
             )
 
     def run_spellcheck(self):
-        if not self.state.file_handler.segments:
+        segments = self.state.file_handler.segments
+        if not segments:
             QMessageBox.warning(self, "No Data", "Open a file first before spell check.")
             return
-        dlg = SpellCheckDialog(self.state.file_handler.segments, self.state.spellchecker, self)
-        dlg.exec_()
-        self.populate_table(self.state.file_handler.segments)
+        self._ensure_spell_worker()
+        self._spell_check_segments = segments
+        self.status_label.setText("Spell checking in background...")
+        self._spell_check_requested.emit(segments)
 
     # ----------------- STATS UPDATE -----------------
     def update_stats(self):
@@ -1902,6 +2178,10 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(0)
         self.tm_list.clear()
         self.glossary_table.setRowCount(0)
+        self.manual_view.clear_document()
+        self.view_stack.setCurrentWidget(self.main_view)
+        self.manual_seg_action.setChecked(False)
+        self.manual_seg_action.setEnabled(False)
         self.status_label.setText(f"Project closed: {proj_name}")
 
     def new_project(self):
@@ -1919,14 +2199,21 @@ class MainWindow(QMainWindow):
             return
 
         name, src_lang, tgt_lang, src_files = dial.get_data()
-        self.state.new_project(name, src_lang, tgt_lang, src_files)
+        manual = dial.is_manual_segmentation()
+        self.state.new_project(name, src_lang, tgt_lang, src_files,
+                               manual_segmentation=manual)
         self.current_segment_index = -1
         self.modified = False
+        self.manual_seg_action.setEnabled(manual)
 
         if src_files:
-            self._open_project_source_file(0)
+            if manual:
+                self._open_manual_project_file(0)
+            else:
+                self._open_project_source_file(0)
         else:
             self.table.setRowCount(0)
+            self.view_stack.setCurrentWidget(self.main_view)
 
         self.update_stats()
         self._load_spelling_dict_for_language(tgt_lang)
@@ -1981,11 +2268,16 @@ class MainWindow(QMainWindow):
             self.state.load_project(file_path)
             self.current_segment_index = -1
             self.modified = False
+            self.manual_seg_action.setEnabled(self.state.is_manual_project)
 
             if self.state.project.source_files:
-                self._open_project_source_file(0)
+                if self.state.is_manual_project:
+                    self._open_manual_project_file(0)
+                else:
+                    self._open_project_source_file(0)
             else:
                 self.table.setRowCount(0)
+                self.view_stack.setCurrentWidget(self.main_view)
 
             self._update_recent_menu()
             self.update_stats()
@@ -1999,6 +2291,8 @@ class MainWindow(QMainWindow):
             self.state.load_omegat(dir_path)
             self.current_segment_index = -1
             self.modified = False
+            self.manual_seg_action.setEnabled(False)
+            self.view_stack.setCurrentWidget(self.main_view)
 
             if self.state.project.source_files:
                 self._open_project_source_file(0)
@@ -2027,7 +2321,145 @@ class MainWindow(QMainWindow):
         self._load_spelling_dict_for_language(self.state.project.target_lang)
         self.status_label.setText("Project settings updated.")
 
+    def _next_unfinished_manual_file(self):
+        if not self.state.project:
+            return None
+        for index, path in enumerate(self.state.project.source_files):
+            state = self.state.project.manual_files.get(path) or {}
+            if not state.get("done", False):
+                return index
+        return None
+
+    def _sync_current_manual_document(self, target_path=None):
+        """Persist the current file before switching to another one."""
+        path = self.state._manual_file_path
+        if not path or not self.state.project:
+            return
+        if target_path is not None and path == target_path:
+            return
+        existing = self.state.project.manual_files.get(path) or {}
+        self.state.project.manual_files[path] = {
+            "done": bool(existing.get("done", False)),
+            "segments": [
+                self.state._sanitise_segment(seg)
+                for seg in self.state.file_handler.segments
+            ],
+        }
+
+    def _open_manual_project_file(self, index=0, force_manual=False):
+        if not self.state.project:
+            return
+        if index < 0 or index >= len(self.state.project.source_files):
+            return
+        target_path = self.state.project.source_files[index]
+        self._sync_current_manual_document(target_path)
+        blocks, segments, label, done, error = \
+            self.state.load_manual_document(index)
+        if error:
+            QMessageBox.critical(self, "Error Loading Source File", error)
+            return
+
+        self.manual_view.set_file_list(
+            self.state.project.source_files, index)
+        self.manual_view.load_document(
+            blocks, segments, label=label, done=done)
+        self.state.file_handler.segments = list(segments)
+        self.populate_table(self.state.file_handler.segments)
+        self.current_segment_index = -1
+        self.update_stats()
+
+        if done:
+            self.manual_seg_action.setChecked(bool(force_manual))
+            if force_manual:
+                self.view_stack.setCurrentWidget(self.manual_view)
+            else:
+                self.view_stack.setCurrentWidget(self.main_view)
+            self.status_label.setText(
+                f"Loaded: {label} (segmentation locked)")
+        else:
+            self.view_stack.setCurrentWidget(self.manual_view)
+            self.manual_seg_action.setChecked(True)
+            self.status_label.setText(
+                f"Loaded: {label} \u2014 define translation units")
+
+    def _on_manual_segments_changed(self, segments):
+        self.state.file_handler.segments = list(segments)
+        self.populate_table(self.state.file_handler.segments)
+        self.modified = True
+        self.update_stats()
+
+    def _on_manual_finished(self):
+        if not self.state.project:
+            return
+        index = self.state._manual_file_index
+        if index < 0 or index >= len(self.state.project.source_files):
+            return
+        path = self.state.project.source_files[index]
+        self.state.save_manual_document(
+            path, self.state.file_handler.segments, done=True)
+        self.modified = True
+
+        next_index = self._next_unfinished_manual_file()
+        if next_index is not None and next_index != index:
+            self.status_label.setText(
+                "File segmented. Continuing with the next source file.")
+            self._open_manual_project_file(next_index)
+            return
+
+        self.view_stack.setCurrentWidget(self.main_view)
+        self.manual_seg_action.setChecked(False)
+        self.status_label.setText(
+            "Manual segmentation complete. Translation view is ready.")
+        if self.state.file_handler.segments:
+            self.table.selectRow(0)
+
+    def _on_manual_edit_started(self):
+        if not self.state.project or not self.state._manual_file_path:
+            return
+        path = self.state._manual_file_path
+        state = self.state.project.manual_files.get(path) or {}
+        state["done"] = False
+        self.state.project.manual_files[path] = state
+        self.modified = True
+        self.manual_seg_action.setChecked(True)
+        self.view_stack.setCurrentWidget(self.manual_view)
+        self.status_label.setText(
+            "Segmentation unlocked for editing. Finish when done.")
+
+    def toggle_manual_segmentation(self):
+        if not self.state.is_manual_project:
+            self.manual_seg_action.setChecked(False)
+            QMessageBox.information(
+                self, "Manual Segmentation",
+                "Manual segmentation is only available for projects created "
+                "with 'Segment this project manually'.")
+            return
+        if not self.state.project or not self.state.project.source_files:
+            self.manual_seg_action.setChecked(False)
+            return
+
+        if self.view_stack.currentWidget() is self.manual_view:
+            path = self.state._manual_file_path
+            state = self.state.project.manual_files.get(path) or {}
+            if state.get("done", False):
+                self.view_stack.setCurrentWidget(self.main_view)
+                self.manual_seg_action.setChecked(False)
+                self.status_label.setText("Translation view.")
+            else:
+                self.manual_seg_action.setChecked(True)
+                self.status_label.setText(
+                    "Finish segmentation before returning to the table.")
+            return
+
+        index = self.state._manual_file_index
+        if index < 0:
+            index = 0
+        self._open_manual_project_file(index, force_manual=True)
+
     def _open_project_source_file(self, index):
+        if self.state.is_manual_project:
+            self._open_manual_project_file(index)
+            return
         segments, label, ok, error = self.state.open_project_source_file(index)
         if not ok:
             if error and "not found" in error.lower():
@@ -2180,6 +2612,8 @@ class MainWindow(QMainWindow):
             self.state.load_memoq(dir_path)
             self.current_segment_index = -1
             self.modified = False
+            self.manual_seg_action.setEnabled(False)
+            self.view_stack.setCurrentWidget(self.main_view)
 
             if self.state.project.mqxliff_files:
                 self.state.file_handler.load_file(self.state.project.mqxliff_files[0])

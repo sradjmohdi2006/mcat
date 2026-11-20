@@ -2,7 +2,8 @@ import os
 
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                              QLabel, QPushButton, QHBoxLayout, QListWidget,
-                             QFileDialog, QDialogButtonBox, QComboBox)
+                             QFileDialog, QDialogButtonBox, QComboBox,
+                             QCheckBox)
 from PyQt5.QtCore import Qt
 
 from cat_tool.dialogs import fill_lang_combo, FILE_FILTER
@@ -36,6 +37,13 @@ class NewProjectDialog(QDialog):
         self.tgt_lang_combo.setMinimumWidth(250)
         tgt_label = QLabel("Target Language:")
         form.addRow(tgt_label, self.tgt_lang_combo)
+
+        self.manual_seg_checkbox = QCheckBox(
+            "Segment this project manually")
+        self.manual_seg_checkbox.setToolTip(
+            "Skip automatic segmentation. Define translation units yourself "
+            "in the Manual Segmentation view.")
+        form.addRow("Segmentation:", self.manual_seg_checkbox)
 
         layout.addLayout(form)
         layout.addSpacing(10)
@@ -95,6 +103,9 @@ class NewProjectDialog(QDialog):
             self.tgt_lang_combo.currentData(),
             list(self.source_files),
         )
+
+    def is_manual_segmentation(self):
+        return self.manual_seg_checkbox.isChecked()
 
 
 class ProjectSettingsDialog(QDialog):

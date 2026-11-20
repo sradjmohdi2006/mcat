@@ -17,6 +17,8 @@ class Project:
         self.file_path = None
         self.created_at = ""
         self.modified_at = ""
+        self.segmentation_mode = "auto"
+        self.manual_files = {}
 
     @staticmethod
     def default_dir():
@@ -24,7 +26,8 @@ class Project:
         os.makedirs(d, exist_ok=True)
         return d
 
-    def new(self, name, source_lang, target_lang, source_files):
+    def new(self, name, source_lang, target_lang, source_files,
+            manual_segmentation=False):
         now = datetime.now().isoformat()
         self.name = name
         self.source_lang = source_lang
@@ -33,6 +36,8 @@ class Project:
         self.file_path = None
         self.created_at = now
         self.modified_at = now
+        self.segmentation_mode = "manual" if manual_segmentation else "auto"
+        self.manual_files = {}
 
     def to_dict(self):
         return {
@@ -41,6 +46,8 @@ class Project:
             "source_lang": self.source_lang,
             "target_lang": self.target_lang,
             "source_files": self.source_files,
+            "segmentation_mode": self.segmentation_mode,
+            "manual_files": self.manual_files,
             "created_at": self.created_at,
             "modified_at": self.modified_at,
         }
@@ -55,6 +62,8 @@ class Project:
         p.file_path = file_path
         p.created_at = data.get("created_at", "")
         p.modified_at = data.get("modified_at", "")
+        p.segmentation_mode = data.get("segmentation_mode", "auto")
+        p.manual_files = data.get("manual_files", {}) or {}
         return p
 
     def save(self, file_path=None):

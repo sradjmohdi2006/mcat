@@ -38,6 +38,9 @@ class AppState:
         self.modified = False
         self._original_file_ext = None
         self._original_file_path = None
+        self._manual_blocks = []
+        self._manual_file_path = None
+        self._manual_file_index = -1
         self._load_segmentation_rules()
 
     # ---- property helpers ----
@@ -65,6 +68,12 @@ class AppState:
         return len(self.file_handler.segments) if self.file_handler.segments else 0
 
     @property
+    def is_manual_project(self):
+        return bool(
+            self.project
+            and getattr(self.project, "segmentation_mode", "auto") == "manual")
+
+    @property
     def current_segment(self):
         if not self.file_handler.segments:
             return None
@@ -88,18 +97,26 @@ class AppState:
 
     # ---- project operations ----
 
-    def new_project(self, name, src_lang, tgt_lang, src_files):
+    def new_project(self, name, src_lang, tgt_lang, src_files,
+                    manual_segmentation=False):
         self.project = Project()
-        self.project.new(name, src_lang, tgt_lang, src_files)
+        self.project.new(name, src_lang, tgt_lang, src_files,
+                         manual_segmentation=manual_segmentation)
         self.file_handler = CATFileHandler()
         self.current_segment_index = -1
         self.modified = False
+        self._manual_blocks = []
+        self._manual_file_path = None
+        self._manual_file_index = -1
 
     def load_project(self, file_path):
         self.project = Project.load(file_path)
         self.file_handler = CATFileHandler()
         self.current_segment_index = -1
         self.modified = False
+        self._manual_blocks = []
+        self._manual_file_path = None
+        self._manual_file_index = -1
         Project.add_recent(file_path, self.project.name)
 
     def load_omegat(self, dir_path):
@@ -107,6 +124,9 @@ class AppState:
         self.file_handler = CATFileHandler()
         self.current_segment_index = -1
         self.modified = False
+        self._manual_blocks = []
+        self._manual_file_path = None
+        self._manual_file_index = -1
         Project.add_recent(dir_path, self.project.name)
 
     def load_memoq(self, dir_path):
@@ -114,6 +134,9 @@ class AppState:
         self.file_handler = CATFileHandler()
         self.current_segment_index = -1
         self.modified = False
+        self._manual_blocks = []
+        self._manual_file_path = None
+        self._manual_file_index = -1
         Project.add_recent(dir_path, self.project.name)
 
     def close_project(self):
@@ -124,10 +147,14 @@ class AppState:
         self.modified = False
         self._original_file_ext = None
         self._original_file_path = None
+        self._manual_blocks = []
+        self._manual_file_path = None
+        self._manual_file_index = -1
         return proj_name
 
     def save_project(self):
         if self.project and self.project.file_path:
+            self.sync_manual_state()
             self.project.save()
             Project.add_recent(self.project.file_path, self.project.name)
             self.modified = False
@@ -135,6 +162,7 @@ class AppState:
     def save_project_as_mcatproj(self, file_path):
         if not file_path.endswith(".mcatproj"):
             file_path += ".mcatproj"
+        self.sync_manual_state()
         self.project.save(file_path)
         self.modified = False
         Project.add_recent(file_path, self.project.name)
@@ -160,6 +188,11 @@ class AppState:
         file_path = self.project.source_files[index]
         if not os.path.exists(file_path):
             return None, "", False, f"Source file not found:\n{file_path}"
+        if self.is_manual_project:
+            blocks, segments, label, done, error = self.load_manual_document(index)
+            if error:
+                return None, "", False, error
+            return self.file_handler.segments, label, True, None
         ext = os.path.splitext(file_path)[1].lower()
         is_mcatdb = ext == ".mcat.db"
         try:
@@ -179,6 +212,111 @@ class AppState:
         except Exception as e:
             return None, "", False, str(e)
 
+    def load_manual_document(self, index):
+        """Load document blocks plus saved units for a manual project.
+
+        Returns (blocks, segments, label, done, error).  The blocks are the
+        format handler's paragraphs/lines/cells before any unit is created.
+        """
+        if not self.project or index < 0 or index >= len(self.project.source_files):
+            return [], [], "", False, "No source file at that index"
+        file_path = self.project.source_files[index]
+        if not os.path.exists(file_path):
+            return [], [], "", False, f"Source file not found:\n{file_path}"
+        try:
+            handler = CATFileHandler()
+            raw_segments = handler.load_file(file_path)
+            blocks = [{
+                "text": seg.get("source", ""),
+                "source_location": dict(seg.get("source_location") or {}),
+                "all_tags": list(seg.get("all_tags") or []),
+            } for seg in raw_segments]
+            state = self.project.manual_files.get(file_path) or {}
+            if (self._manual_file_path == file_path
+                    and self.file_handler.segments):
+                # Keep table edits made since the project was last saved.
+                segments = list(self.file_handler.segments)
+            else:
+                segments = list(state.get("segments", []))
+            done = bool(state.get("done", False))
+            self.file_handler = CATFileHandler()
+            self.file_handler._handler = handler._handler
+            self.file_handler.current_file_path = file_path
+            self.file_handler.segments = segments
+            self._manual_blocks = blocks
+            self._manual_file_path = file_path
+            self._manual_file_index = index
+            self._original_file_path = file_path
+            self._original_file_ext = os.path.splitext(file_path)[1].lower()
+            return (blocks, segments, os.path.basename(file_path), done, None)
+        except Exception as e:
+            return [], [], "", False, str(e)
+
+    def save_manual_document(self, index_or_path, segments, done=False):
+        """Persist the units for one source file in the project state."""
+        if not self.project:
+            return
+        if isinstance(index_or_path, int):
+            if index_or_path < 0 or index_or_path >= len(self.project.source_files):
+                return
+            file_path = self.project.source_files[index_or_path]
+        else:
+            file_path = index_or_path
+        if not file_path:
+            return
+        self.project.manual_files[file_path] = {
+            "done": bool(done),
+            "segments": [self._sanitise_segment(seg) for seg in segments],
+        }
+        self.modified = True
+
+    def sync_manual_state(self):
+        """Copy the in-memory table back into the project manual state."""
+        if not self.is_manual_project or not self._manual_file_path:
+            return
+        existing = self.project.manual_files.get(
+            self._manual_file_path) or {}
+        self.project.manual_files[self._manual_file_path] = {
+            "done": bool(existing.get("done", False)),
+            "segments": [
+                self._sanitise_segment(seg)
+                for seg in self.file_handler.segments
+            ],
+        }
+
+    @staticmethod
+    def _sanitise_segment(segment):
+        keys = (
+            "index", "source", "target", "source_clean", "target_clean",
+            "all_tags", "notes", "fuzzy", "translated", "locations",
+            "source_location", "manual_start", "manual_end", "manual_block",
+            "manual_block_start", "manual_block_end",
+        )
+        clean = {}
+        for key in keys:
+            if key in segment:
+                value = segment[key]
+                if key == "source_location":
+                    value = dict(value or {})
+                elif key == "all_tags":
+                    value = list(value or [])
+                clean[key] = value
+        return clean
+
+    def render_manual_translated(self, output_path):
+        """Render manual units back into the original document format."""
+        if not self._manual_blocks:
+            raise ValueError("No manually segmented document is loaded.")
+        from cat_tool.manual_segmentation import ManualSegmenter
+        segmenter = ManualSegmenter(self._manual_blocks)
+        segmenter.load_units(self.file_handler.segments)
+        render_segments = segmenter.build_render_segments()
+        handler = CATFileHandler()
+        source_path = self._manual_file_path or self._original_file_path
+        handler.load_file(source_path)
+        handler.segments = render_segments
+        handler.render_translated(output_path, original_path=source_path)
+
     # ---- TM operations ----
 
     def import_po_to_tm(self, po_path):
@@ -190,6 +328,16 @@ class AppState:
                 self.tm.add_translation(seg["source"], seg["target"], self.tm_sl, self.tm_tl)
                 imported_count += 1
         return imported_count, segments
+
+    def peek_tmx(self, tmx_path):
+        """Return summary information about a TMX file."""
+        from cat_tool.tmx_utils import peek_tmx
+        return peek_tmx(tmx_path)
+
+    def import_tmx_to_tm(self, tmx_path, source_lang=None, target_lang=None):
+        """Import the translation units of a TMX file into the TM."""
+        return self.tm.import_tmx(
+            tmx_path, source_lang=source_lang, target_lang=target_lang)
 
     def clear_tm(self):
         self.tm.clear()

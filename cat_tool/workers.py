@@ -85,3 +85,45 @@ class FuzzyMatchWorker(QObject):
             self.finished.emit(matches)
         except Exception:
             self.finished.emit([])
+
+
+class SpellWorker(QObject):
+    """Background spell checking and learned-index maintenance."""
+
+    finished = pyqtSignal(list)   # list of (segment index, errors)
+    error = pyqtSignal(str)
+    indexed = pyqtSignal()
+
+    def __init__(self, spellchecker):
+        super().__init__()
+        self.spellchecker = spellchecker
+
+    def check_segments(self, segments):
+        try:
+            results = []
+            for index, seg in enumerate(segments):
+                target = seg.get("target_clean", seg.get("target", ""))
+                if not target:
+                    continue
+                errors = self.spellchecker.check_text(target)
+                if errors:
+                    results.append((index, errors))
+            self.finished.emit(results)
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def index_translation(self, source, previous_target, new_target):
+        """Insert a newly entered translation or replace an existing entry."""
+        try:
+            self.spellchecker.index_translation(source, new_target, previous_target)
+            self.indexed.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def index_correction(self, source, old_word, new_word):
+        """Replace an indexed word after the user corrects it."""
+        try:
+            self.spellchecker.index_correction(source, old_word, new_word)
+            self.indexed.emit()
+        except Exception as e:
+            self.error.emit(str(e))

@@ -8,8 +8,8 @@ A powerful, open-source CAT (Computer-Aided Translation) tool built with Python 
 
 ### Core Translation Features
 - **Multi-format Support**: PO, XLIFF, MQXLIFF, SDLXLIFF, TMX, TS, CSV, TXT, PDF, DOCX, PPTX, XLSX, ODT, ODS, ODP
-- **Translation Memory (TM)**: SQLite-based with fuzzy matching (rapidfuzz) and semantic search (fastembed + sqlite-vec)
-- **Glossary/Terminology Management**: SQLite-based with collections, TMX import/export
+- **Translation Memory (TM)**: SQLite-based with fuzzy matching (rapidfuzz), semantic search (fastembed + sqlite-vec), and TMX import
+- **Glossary/Terminology Management**: SQLite-based with collections, TMX/TBX import and TMX export
 - **Segmentation**: Language-aware segmentation rules (SRX-compatible)
 - **Quality Assurance**: Built-in QA checks (terminology, consistency, formatting, numbers, etc.)
 - **Spell Checking**: Hunspell integration with multi-language support
@@ -29,6 +29,7 @@ A powerful, open-source CAT (Computer-Aided Translation) tool built with Python 
 - **Project Formats**: Native (.mcatproj), OmegaT, memoQ import/export
 - **Recent Projects**: Quick access to recent projects
 - **Multiple Source Files**: Manage multiple source files per project
+- **Manual Segmentation**: Create projects with *Segment this project manually* to define translation units yourself instead of using automatic segmentation
 
 ### User Interface
 - **Dark Theme**: Modern, eye-friendly dark UI
@@ -75,12 +76,14 @@ See `requirements.txt` for complete list.
 ## Quick Start
 
 1. **Create a Project**: `Ctrl+N` → New Project → Set name, languages, add source files
+   - Check **Segment this project manually** to define translation units yourself
 2. **Open a File**: `Ctrl+O` → Select translation file (PO, XLIFF, MQXLIFF, etc.)
 3. **Translate**: Use `Ctrl+Enter` to confirm and move to next segment
 4. **Search**: `Ctrl+Shift+F` → Search across memory, TM, and glossary
 5. **TM Match**: Double-click TM suggestion in sidebar or search results to apply
 6. **Glossary**: `Ctrl+G` to add terms, `Ctrl+Shift+G` to manage
-7. **Render**: `Ctrl+R` to generate translated output file
+7. **Import**: Use the Translation Memory and Glossary menus to import TMX memories and TBX/TMX term lists
+8. **Render**: `Ctrl+R` to generate translated output file
 
 ## Keyboard Shortcuts
 
@@ -99,10 +102,37 @@ See `requirements.txt` for complete list.
 | `Ctrl+G` | Add Glossary Term |
 | `Ctrl+Shift+G` | View/Manage Glossary |
 | `Ctrl+Shift+F` | **Unified Search (NEW!)** |
+| `Ctrl+Shift+M` | Manual Segmentation View |
 | `Ctrl+M` | Import PO into TM |
 | `Ctrl+Shift+Q` | Quality Assurance |
 | `F7` | Spell Check |
 | `F1` / `Ctrl+Shift+H` | Keyboard Shortcuts |
+
+## Manual Segmentation
+
+Manual segmentation lets you decide where translation units begin and end
+before translating. Enable **Segment this project manually** in the New Project
+dialog. Instead of automatic segmentation, the project opens in the **Naming**
+phase, where the document is shown as read-only text and the translation table
+is populated only after you define units.
+
+1. Place the cursor on a word or punctuation mark.
+2. Choose **Set Unit Start** (`Ctrl+[`), then **Set Unit End** (`Ctrl+]`).
+   Endings stop exactly at the chosen word or punctuation mark.
+3. Choose **Split** (`Ctrl+Enter`) to commit the marked unit.
+4. Repeat as needed, then choose **Split All** (`Ctrl+Shift+Enter`) to commit
+   the marked units and create units from every remaining gap. Gaps are trimmed
+   and split at paragraph/line/cell boundaries.
+5. Choose **Finish Segmentation**. If text is still unsegmented, you can fill
+   the gaps first.
+
+The finished segmentation is **locked** by default. Use **Edit Segmentation**
+to unlock it; a warning explains that changing boundaries can alter or discard
+existing translated rows. Units, targets, and lock state are stored in the
+project file, so translations survive reopening the project.
+
+Right-click in the document (or press `Shift+F10` / the Menu key) for the same
+actions. `Esc` clears pending boundaries and `Ctrl+Z` undoes the last action.
 
 ## Unified Search Guide
 
@@ -165,9 +195,12 @@ mcat/
 │   ├── state_manager.py    # Application state
 │   ├── tm.py               # Translation Memory
 │   ├── glossary.py         # Glossary/Terminology
+│   ├── tmx_utils.py        # TMX / TBX readers
 │   ├── project.py          # Project management
 │   ├── file_handler.py     # File I/O abstraction
 │   ├── segmentation.py     # Segmentation rules
+│   ├── manual_segmentation.py       # Manual unit boundaries & rendering
+│   ├── manual_segmentation_view.py  # Manual segmentation document view
 │   ├── search_fetcher.py   # Unified search engine (NEW!)
 │   ├── suggest.py          # Auto-complete/suggestions
 │   ├── qa.py               # Quality Assurance
@@ -180,7 +213,6 @@ mcat/
 │   │   ├── xliff.py        # XLIFF
 │   │   ├── mqxliff.py      # memoQ XLIFF
 │   │   ├── sdlxliff.py     # SDL Trados XLIFF
-│   │   ├── tmx.py          # TMX
 │   │   ├── ts.py           # Qt TS
 │   │   ├── pdf.py          # PDF
 │   │   ├── docx.py         # Word
@@ -191,6 +223,7 @@ mcat/
 │       ├── search_dialog.py    # Unified search (NEW!)
 │       ├── view_dialogs.py     # Chapter view, tags, shortcuts
 │       ├── glossary_dialogs.py # Glossary management
+│       ├── import_dialog.py   # Multi-file import review list
 │       ├── project_dialogs.py  # Project creation/settings
 │       ├── spellcheck_dialog.py
 │       └── settings_dialog.py
@@ -244,6 +277,17 @@ CREATE VIRTUAL TABLE vec_embeddings USING vec0(
    - Model: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
    - 384 dimensions, int8 quantized for sqlite-vec
 
+### Importing TMX
+`Translation Memory → Import TMX into TM...` reads translation units from
+TMX files produced by SDL Trados, memoQ, OmegaT and other CAT tools. Multiple
+files can be selected at once; the import list lets you add, remove or clear
+files before starting. Source and target languages are detected from the TMX
+header and can be changed before importing.
+
+If every translation unit in a file is a single word, mcat treats it as a
+term list and asks whether to save the entries in the glossary instead of the
+translation memory.
+
 ## Glossary Details
 
 ### Database Schema
@@ -271,6 +315,15 @@ CREATE TABLE collection_terms (
     FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
 );
 ```
+
+### Importing Terms
+- `Glossary → Import TBX into Glossary...` reads term entries from TBX
+  (TermBase eXchange) files, including definitions and language sections.
+- `Glossary → Import TMX into Glossary...` treats TMX files as term lists.
+- `Translation Memory → Import TMX into TM...` detects single-word TMX files
+  and offers to import them into the glossary instead.
+- All import actions accept multiple files. A review list lets you add,
+  remove or clear files before starting the batch.
 
 ### Collections
 Organize terms into named collections (e.g., "Legal", "Medical", "UI Strings")

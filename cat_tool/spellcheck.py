@@ -1,20 +1,34 @@
 import os
 import re
 import shutil
+import threading
 import zipfile
+from difflib import get_close_matches
+
 from spylls.hunspell import Dictionary
 
 DICTS_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "mcat", "dicts")
+PERSONAL_DIC_DIR = os.path.join(DICTS_DIR, "personal")
+PERSONAL_DIC_PATH = os.path.join(PERSONAL_DIC_DIR, "personal.dic")
+PERSONAL_AFF_PATH = os.path.join(PERSONAL_DIC_DIR, "personal.aff")
+WORD_RE = re.compile(r"\b[^\W\d_]+\b", re.UNICODE)
 
 
 class SpellChecker:
     def __init__(self):
         self.dictionaries = []
         self._loaded_names = []
+        self._custom_words = set()
+        self._segment_index = {}
+        self._lock = threading.RLock()
         os.makedirs(DICTS_DIR, exist_ok=True)
+        os.makedirs(PERSONAL_DIC_DIR, exist_ok=True)
+        self._load_personal_index()
 
     def auto_load(self):
         for name in os.listdir(DICTS_DIR):
+            if name.lower() == "personal":
+                continue
             dir_path = os.path.join(DICTS_DIR, name)
             if not os.path.isdir(dir_path):
                 continue
@@ -105,7 +119,89 @@ class SpellChecker:
     def loaded_names(self):
         return list(self._loaded_names)
 
-    def check(self, word):
+    # ------------------------------------------------------------------
+    # Learned index (custom Hunspell .dic + segment cache)
+    # ------------------------------------------------------------------
+    def _load_personal_index(self):
+        """Restore learned words from the personal Hunspell dictionary."""
+        if not os.path.exists(PERSONAL_DIC_PATH):
+            self._write_personal_dic()
+            return
+        try:
+            with open(PERSONAL_DIC_PATH, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+            for line in lines[1:]:  # first line is the word count
+                word = line.split("/", 1)[0].strip()
+                if word:
+                    self._custom_words.add(word.lower())
+        except OSError:
+            pass
+
+    def _write_personal_dic(self):
+        """Persist learned words so they survive a restart."""
+        words = sorted(self._custom_words)
+        try:
+            if not os.path.exists(PERSONAL_AFF_PATH):
+                with open(PERSONAL_AFF_PATH, "w", encoding="utf-8") as handle:
+                    handle.write("SET UTF-8\n")
+            with open(PERSONAL_DIC_PATH, "w", encoding="utf-8") as handle:
+                handle.write(f"{len(words)}\n")
+                for word in words:
+                    handle.write(word + "\n")
+        except OSError:
+            pass
+
+    @property
+    def indexed_words(self):
+        with self._lock:
+            return sorted(self._custom_words)
+
+    @property
+    def indexed_segments(self):
+        with self._lock:
+            return dict(self._segment_index)
+
+    def index_translation(self, source, target, previous_target=""):
+        """Upsert a segment and its words into the learned index.
+
+        The first translation of a segment inserts it.  Later edits replace
+        the stored entry instead of adding a duplicate.  Words removed by a
+        correction are dropped from the custom dictionary so the correction
+        really replaces what was indexed.
+        """
+        with self._lock:
+            errors = self._collect_errors(target or "", self._check_dicts)
+            old_words = set(WORD_RE.findall(previous_target or ""))
+            new_words = set(WORD_RE.findall(target or ""))
+            for word in old_words - new_words:
+                self._custom_words.discard(word.lower())
+            for word in new_words:
+                self._custom_words.add(word.lower())
+            entry = {"target": target or "", "errors": errors}
+            self._segment_index[source] = entry
+            self._write_personal_dic()
+            return dict(entry)
+
+    def index_correction(self, source, old_word, new_word):
+        """Replace one indexed word with its correction."""
+        with self._lock:
+            entry = self._segment_index.get(source, {})
+            target = entry.get("target", "")
+            pattern = r"\b" + re.escape(old_word) + r"\b"
+            updated = re.sub(pattern, new_word, target, count=1)
+            self._custom_words.discard(old_word.lower())
+            if new_word:
+                self._custom_words.add(new_word.lower())
+            if source in self._segment_index:
+                entry["target"] = updated
+                entry["errors"] = self._collect_errors(updated, self._check_dicts)
+            self._write_personal_dic()
+            return updated
+
+    # ------------------------------------------------------------------
+    # Checking
+    # ------------------------------------------------------------------
+    def _check_dicts(self, word):
         if not self.dictionaries:
             return True
         for d in self.dictionaries:
@@ -113,23 +209,35 @@ class SpellChecker:
                 return True
         return False
 
+    def check(self, word):
+        with self._lock:
+            if word.lower() in self._custom_words:
+                return True
+        return self._check_dicts(word)
+
     def suggest(self, word):
         suggestions = set()
         for d in self.dictionaries:
             for s in d.suggest(word):
                 suggestions.add(s)
+        with self._lock:
+            custom = list(self._custom_words)
+        if custom:
+            suggestions.update(get_close_matches(word.lower(), custom, n=8, cutoff=0.7))
         return sorted(suggestions)
 
-    def check_text(self, text):
+    def _collect_errors(self, text, checker):
         if not text:
             return []
-        words = re.findall(r"\b[^\W\d_]+\b", text, re.UNICODE)
         errors = []
         seen = set()
-        for word in words:
+        for word in WORD_RE.findall(text):
             if word.lower() in seen:
                 continue
-            if not self.check(word):
+            if not checker(word):
                 seen.add(word.lower())
                 errors.append((word, self.suggest(word)))
         return errors
+
+    def check_text(self, text):
+        return self._collect_errors(text, self.check)

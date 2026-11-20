@@ -668,6 +668,118 @@ msgstr ""
             app = None
 
 
+class TestMultiFileImportDialog(unittest.TestCase):
+    def setUp(self):
+        from PyQt5.QtWidgets import QApplication
+        self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication(sys.argv)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.files = []
+        for name in ("alpha.tmx", "beta.tmx", "gamma.tbx"):
+            path = os.path.join(self.tmp.name, name)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("<tmx version=\"1.4\"/>")
+            self.files.append(os.path.normpath(path))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_initial_files_are_deduplicated(self):
+        from cat_tool.dialogs import MultiFileImportDialog
+        dlg = MultiFileImportDialog(
+            initial_files=[self.files[0], self.files[0], self.files[1]])
+        self.assertEqual(dlg.files(), [self.files[0], self.files[1]])
+
+    def test_missing_or_empty_paths_are_ignored(self):
+        from cat_tool.dialogs import MultiFileImportDialog
+        dlg = MultiFileImportDialog(initial_files=[
+            os.path.join(self.tmp.name, "missing.tmx"), "", None])
+        self.assertEqual(dlg.files(), [])
+
+    def test_remove_selected(self):
+        from cat_tool.dialogs import MultiFileImportDialog
+        dlg = MultiFileImportDialog(initial_files=self.files[:2])
+        dlg.file_list.item(0).setSelected(True)
+        dlg.remove_selected()
+        self.assertEqual(dlg.files(), [self.files[1]])
+
+    def test_clear(self):
+        from cat_tool.dialogs import MultiFileImportDialog
+        dlg = MultiFileImportDialog(initial_files=self.files)
+        dlg.file_list.clear()
+        self.assertEqual(dlg.files(), [])
+
+    def test_add_files(self):
+        from unittest.mock import patch
+        from cat_tool.dialogs import MultiFileImportDialog
+        dlg = MultiFileImportDialog(file_filter="TMX Files (*.tmx)")
+        with patch(
+            "cat_tool.dialogs.import_dialog.QFileDialog.getOpenFileNames",
+            return_value=([self.files[0], self.files[2]], ""),
+        ):
+            dlg.add_files()
+        self.assertEqual(dlg.files(), [self.files[0], self.files[2]])
+
+    def test_import_requires_at_least_one_file(self):
+        from unittest.mock import patch
+        from PyQt5.QtWidgets import QDialog
+        from cat_tool.dialogs import MultiFileImportDialog
+        dlg = MultiFileImportDialog()
+        with patch(
+            "cat_tool.dialogs.import_dialog.QMessageBox.information"
+        ) as info:
+            dlg._accept_if_any()
+        info.assert_called_once()
+        self.assertNotEqual(dlg.result(), QDialog.Accepted)
+
+    def test_accept_with_files(self):
+        from PyQt5.QtWidgets import QDialog
+        from cat_tool.dialogs import MultiFileImportDialog
+        dlg = MultiFileImportDialog(initial_files=[self.files[0]])
+        dlg._accept_if_any()
+        self.assertEqual(dlg.result(), QDialog.Accepted)
+
+
+class TestLanguageCombo(unittest.TestCase):
+    def setUp(self):
+        from PyQt5.QtWidgets import QApplication
+        self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication(sys.argv)
+
+    def test_regional_code_falls_back_to_base_language(self):
+        from PyQt5.QtWidgets import QComboBox
+        from cat_tool.dialogs import fill_lang_combo
+        combo = QComboBox()
+        fill_lang_combo(combo, "en-US")
+        self.assertEqual(combo.currentData(), "en")
+
+    def test_unknown_code_keeps_default_selection(self):
+        from PyQt5.QtWidgets import QComboBox
+        from cat_tool.dialogs import fill_lang_combo
+        combo = QComboBox()
+        fill_lang_combo(combo, "xx-YY")
+        self.assertEqual(combo.currentIndex(), 0)
+
+    def test_lang_dialog_offers_auto_detect_when_target_missing(self):
+        from cat_tool.dialogs import LangDialog
+        dlg = LangDialog("en", "", 3, format_name="TBX")
+        self.assertEqual(dlg.tgt_combo.currentData(), "")
+        self.assertIn("Auto-detect", dlg.tgt_combo.currentText())
+
+    def test_lang_dialog_shows_format_and_unit_label(self):
+        from PyQt5.QtWidgets import QLabel
+        from cat_tool.dialogs import LangDialog
+        dlg = LangDialog("en", "es", 4, format_name="TMX",
+                         item_label="translation units")
+        self.assertEqual(dlg.windowTitle(), "TMX Language Detection")
+        label_text = " ".join(child.text() for child in dlg.findChildren(QLabel))
+        self.assertIn("translation units", label_text)
+        self.assertIn("TMX", label_text)
+        self.assertGreaterEqual(dlg.src_combo.count(), 1)
+
+
 # ========================== FORMAT HANDLER INTEGRATION ==========================
 
 class TestFileHandlerIntegration(unittest.TestCase):
@@ -884,6 +996,470 @@ class TestRealDocumentLoad(unittest.TestCase):
         from openpyxl import load_workbook
         wb2 = load_workbook(out_path)
         self.assertEqual(wb2.active["A1"].value, "Hola")
+
+
+class TestBatchImportGui(unittest.TestCase):
+    """Exercise the multi-file import methods in ``MainWindow``."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt5.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication(sys.argv)
+
+    def setUp(self):
+        from unittest.mock import patch
+        self.tmp = tempfile.TemporaryDirectory()
+        self._env_patch = patch.dict(
+            os.environ, {"APPDATA": self.tmp.name})
+        self._env_patch.start()
+        from cat_tool.ui import MainWindow
+        self.win = MainWindow()
+
+    def tearDown(self):
+        self.win.cleanup()
+        self.win.close()
+        self.win.deleteLater()
+        self._env_patch.stop()
+        self.tmp.cleanup()
+
+    def _write(self, name, content):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
+    def _tmx(self, name, pairs, srclang="en", target="es"):
+        units = "".join(
+            f'<tu><tuv xml:lang="{srclang}"><seg>{src}</seg></tuv>'
+            f'<tuv xml:lang="{target}"><seg>{tgt}</seg></tuv></tu>'
+            for src, tgt in pairs
+        )
+        return self._write(name, (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<tmx version="1.4"><header srclang="{srclang}"/>'
+            f'<body>{units}</body></tmx>'
+        ))
+
+    def _tbx(self, name, pairs, srclang="en", target="fr"):
+        entries = "".join(
+            f'<termEntry id="{i}">'
+            f'<langSet xml:lang="{srclang}"><tig><term>{src}</term></tig></langSet>'
+            f'<langSet xml:lang="{target}"><tig><term>{tgt}</term></tig></langSet>'
+            "</termEntry>"
+            for i, (src, tgt) in enumerate(pairs)
+        )
+        return self._write(name, (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<tbx version="2" xml:lang="{srclang}"><text><body>'
+            f"{entries}</body></text></tbx>"
+        ))
+
+    @staticmethod
+    def _accepting_dialog(files):
+        from unittest.mock import MagicMock, patch
+        dialog = MagicMock()
+        dialog.files.return_value = files
+        dialog.exec_.return_value = 1  # QDialog.Accepted
+        return patch("cat_tool.ui.MultiFileImportDialog",
+                     return_value=dialog)
+
+    def test_batch_tmx_into_glossary(self):
+        from unittest.mock import patch
+        files = [
+            self._tmx("one.tmx", [("house", "casa")]),
+            self._tmx("two.tmx", [("mouse", "ratón")]),
+        ]
+        with patch.object(
+            self.win, "_ask_import_languages", return_value=("en", "es")
+        ), patch("cat_tool.ui.QMessageBox.information") as info:
+            self.win._import_tmx_files_to_glossary(files)
+        terms = {t["source"]: t["target"]
+                 for t in self.win.state.glossary.get_all_terms()}
+        self.assertEqual(terms, {"house": "casa", "mouse": "ratón"})
+        info.assert_called_once()
+
+    def test_batch_tbx_into_glossary(self):
+        from unittest.mock import patch
+        files = [
+            self._tbx("one.tbx", [("house", "maison")]),
+            self._tbx("two.tbx", [("mouse", "souris")]),
+        ]
+        with patch.object(
+            self.win, "_ask_import_languages", return_value=("en", "fr")
+        ), patch("cat_tool.ui.QMessageBox.information") as info:
+            self.win._import_tbx_files_to_glossary(files)
+        terms = {t["source"]: t["target"]
+                 for t in self.win.state.glossary.get_all_terms()}
+        self.assertEqual(terms, {"house": "maison", "mouse": "souris"})
+        info.assert_called_once()
+
+    def test_batch_tmx_to_tm_imports_units(self):
+        from unittest.mock import patch
+        files = [
+            self._tmx("memory.tmx",
+                      [("Hello world", "Hola mundo"),
+                       ("Good night", "Buenas noches")]),
+        ]
+        with patch.object(
+            self.win, "_ask_import_languages", return_value=("en", "es")
+        ), patch("cat_tool.ui.QMessageBox.information") as info:
+            self.win._import_tmx_files_to_tm(files)
+        matches = self.win.state.tm.get_fuzzy_matches("Hello world")
+        self.assertEqual(matches[0]["target"], "Hola mundo")
+        self.assertEqual(len(self.win.state.glossary.get_all_terms()), 0)
+        info.assert_called_once()
+
+    def test_batch_tmx_term_like_yes_goes_to_glossary(self):
+        from unittest.mock import patch
+        from PyQt5.QtWidgets import QMessageBox
+        files = [self._tmx("terms.tmx", [("cat", "gato")])]
+        with patch.object(
+            self.win, "_ask_import_languages", return_value=("en", "es")
+        ), patch("cat_tool.ui.QMessageBox.question",
+                 return_value=QMessageBox.Yes) as question, patch(
+                     "cat_tool.ui.QMessageBox.information"):
+            self.win._import_tmx_files_to_tm(files)
+        question.assert_called_once()
+        terms = self.win.state.glossary.get_all_terms()
+        self.assertEqual([(t["source"], t["target"]) for t in terms],
+                         [("cat", "gato")])
+        self.assertEqual(
+            self.win.state.tm.get_fuzzy_matches("cat"), [])
+
+    def test_batch_tmx_term_like_no_goes_to_tm(self):
+        from unittest.mock import patch
+        from PyQt5.QtWidgets import QMessageBox
+        files = [self._tmx("terms.tmx", [("dog", "perro")])]
+        with patch.object(
+            self.win, "_ask_import_languages", return_value=("en", "es")
+        ), patch("cat_tool.ui.QMessageBox.question",
+                 return_value=QMessageBox.No), patch(
+                     "cat_tool.ui.QMessageBox.information"):
+            self.win._import_tmx_files_to_tm(files)
+        matches = self.win.state.tm.get_fuzzy_matches("dog")
+        self.assertEqual(matches[0]["target"], "perro")
+        self.assertEqual(self.win.state.glossary.get_all_terms(), [])
+
+    def test_batch_tmx_term_like_cancel_skips_file(self):
+        from unittest.mock import patch
+        from PyQt5.QtWidgets import QMessageBox
+        files = [self._tmx("terms.tmx", [("bird", "pájaro")])]
+        with patch.object(
+            self.win, "_ask_import_languages", return_value=("en", "es")
+        ), patch("cat_tool.ui.QMessageBox.question",
+                 return_value=QMessageBox.Cancel), patch(
+                     "cat_tool.ui.QMessageBox.information") as info:
+            self.win._import_tmx_files_to_tm(files)
+        info.assert_called_once()
+        self.assertEqual(self.win.state.glossary.get_all_terms(), [])
+        self.assertEqual(
+            self.win.state.tm.get_fuzzy_matches("bird"), [])
+
+    def test_batch_tmx_skips_empty_and_missing_files(self):
+        from unittest.mock import patch
+        empty = self._write(
+            "empty.tmx",
+            '<tmx version="1.4"><header srclang="en"/><body/></tmx>')
+        missing = os.path.join(self.tmp.name, "missing.tmx")
+        with patch.object(
+            self.win, "_ask_import_languages", return_value=("en", "es")
+        ), patch("cat_tool.ui.QMessageBox.warning") as warning:
+            self.win._import_tmx_files_to_glossary([empty, missing])
+        warning.assert_called_once()
+
+    def test_batch_collection_import_creates_one_per_file(self):
+        from unittest.mock import patch
+        files = [
+            self._tmx("legal.tmx", [("contract", "contrato")]),
+            self._tmx("medical.tmx", [("fever", "fiebre")]),
+        ]
+        with patch(
+            "cat_tool.ui.QFileDialog.getOpenFileNames",
+            return_value=(files, ""),
+        ), self._accepting_dialog(files), patch(
+            "cat_tool.ui.QMessageBox.information"
+        ) as info:
+            self.win.import_collection_tmx()
+        names = [c["name"]
+                 for c in self.win.state.glossary.get_all_collections()]
+        self.assertEqual(sorted(names), ["legal", "medical"])
+        info.assert_called_once()
+
+    def test_batch_collection_import_reports_duplicate_names(self):
+        from unittest.mock import patch
+        files = [self._tmx("dupe.tmx", [("one", "uno")])]
+        self.win.state.glossary.create_collection("dupe")
+        with patch(
+            "cat_tool.ui.QFileDialog.getOpenFileNames",
+            return_value=(files, ""),
+        ), self._accepting_dialog(files), patch(
+            "cat_tool.ui.QMessageBox.warning"
+        ) as warning:
+            self.win.import_collection_tmx()
+        warning.assert_called_once()
+
+    def test_import_dialog_cancel_does_nothing(self):
+        from unittest.mock import MagicMock, patch
+        dialog = MagicMock()
+        dialog.exec_.return_value = 0  # QDialog.Rejected
+        with patch(
+            "cat_tool.ui.QFileDialog.getOpenFileNames",
+            return_value=(["C:/tmp/one.tmx"], ""),
+        ), patch("cat_tool.ui.MultiFileImportDialog", return_value=dialog), \
+                patch.object(
+                    self.win, "_import_tmx_files_to_glossary") as importer:
+            self.win.import_tmx_to_glossary()
+        importer.assert_not_called()
+
+    def test_ask_import_languages_uses_detected_languages(self):
+        from unittest.mock import patch
+        info = {"source_lang": "en", "target_lang": "es", "count": 2}
+        with patch("cat_tool.ui.LangDialog") as dialog:
+            self.assertEqual(
+                self.win._ask_import_languages(info), ("en", "es"))
+        dialog.assert_not_called()
+
+    def test_ask_import_languages_opens_dialog_for_ambiguity(self):
+        from unittest.mock import MagicMock, patch
+        dialog = MagicMock()
+        dialog.exec_.return_value = 1
+        dialog.src_combo.currentData.return_value = "en"
+        dialog.tgt_combo.currentData.return_value = "fr"
+        info = {"source_lang": "en", "target_lang": "es, fr", "count": 2}
+        with patch("cat_tool.ui.LangDialog", return_value=dialog):
+            result = self.win._ask_import_languages(info)
+        self.assertEqual(result, ("en", "fr"))
+
+    def test_ask_import_languages_cancel_returns_none(self):
+        from unittest.mock import MagicMock, patch
+        dialog = MagicMock()
+        dialog.exec_.return_value = 0
+        info = {"source_lang": "", "target_lang": "", "count": 1}
+        with patch("cat_tool.ui.LangDialog", return_value=dialog):
+            self.assertIsNone(self.win._ask_import_languages(info))
+
+    def test_show_batch_result_truncates_long_error_list(self):
+        from unittest.mock import patch
+        errors = [f"file{i}.tmx: boom" for i in range(12)]
+        with patch("cat_tool.ui.QMessageBox.warning") as warning:
+            self.win._show_batch_import_result(
+                "terms", 5, 12, ["skipped.tmx (empty)"], errors)
+        message = warning.call_args[0][2]
+        self.assertIn("...and 4 more.", message)
+        self.assertIn("Skipped:", message)
+
+
+class TestDialogCoverage(unittest.TestCase):
+    def setUp(self):
+        from PyQt5.QtWidgets import QApplication
+        self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication(sys.argv)
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_glossary_dialog_get_data(self):
+        from cat_tool.dialogs import GlossaryDialog
+        dlg = GlossaryDialog()
+        dlg.src_edit.setText("  house  ")
+        dlg.tgt_edit.setText("  casa  ")
+        dlg.desc_edit.setText("  A home.  ")
+        src, tgt, desc, sl, tl = dlg.get_data()
+        self.assertEqual((src, tgt, desc), ("house", "casa", "A home."))
+        self.assertTrue(sl)
+        self.assertTrue(tl)
+
+    def test_new_project_dialog_data_and_clear(self):
+        from cat_tool.dialogs import NewProjectDialog
+        dlg = NewProjectDialog()
+        dlg.name_edit.setText("  Demo  ")
+        dlg.source_files = ["a.po", "b.po"]
+        dlg.file_list.addItem("a.po")
+        dlg.file_list.addItem("b.po")
+        name, src, tgt, files = dlg.get_data()
+        self.assertEqual(name, "Demo")
+        self.assertEqual(src, "en")
+        self.assertEqual(tgt, "es")
+        self.assertEqual(files, ["a.po", "b.po"])
+        dlg.clear_files()
+        self.assertEqual(dlg.source_files, [])
+        self.assertEqual(dlg.file_list.count(), 0)
+
+    def test_new_project_dialog_requires_name(self):
+        from unittest.mock import patch
+        from PyQt5.QtWidgets import QDialog
+        from cat_tool.dialogs import NewProjectDialog
+        dlg = NewProjectDialog()
+        with patch("PyQt5.QtWidgets.QMessageBox.warning") as warning:
+            dlg._validate_and_accept()
+        warning.assert_called_once()
+        self.assertNotEqual(dlg.result(), QDialog.Accepted)
+        dlg.name_edit.setText("Demo")
+        dlg._validate_and_accept()
+        self.assertEqual(dlg.result(), QDialog.Accepted)
+
+    def test_new_project_dialog_browse_files_deduplicates(self):
+        from unittest.mock import patch
+        from cat_tool.dialogs import NewProjectDialog
+        dlg = NewProjectDialog()
+        paths = [os.path.join(self.tmp.name, "a.po"),
+                 os.path.join(self.tmp.name, "b.po")]
+        with patch(
+            "cat_tool.dialogs.project_dialogs.QFileDialog.getOpenFileNames",
+            return_value=(paths + [paths[0]], ""),
+        ):
+            dlg.browse_files()
+            dlg.browse_files()
+        self.assertEqual(dlg.source_files, paths)
+        self.assertEqual(dlg.file_list.count(), 2)
+
+    def test_settings_dialog_saves_values(self):
+        from cat_tool.dialogs import SettingsDialog
+
+        class FakeSettings(dict):
+            saved = False
+
+            def save(self):
+                self.saved = True
+
+        settings = FakeSettings(
+            source_font_size=12, target_font_size=14,
+            auto_save_on_segment_change=False,
+            show_tag_placeholders=True,
+        )
+        dlg = SettingsDialog(settings)
+        dlg.src_font_spin.setValue(16)
+        dlg.tgt_font_spin.setValue(18)
+        dlg.auto_save_cb.setChecked(True)
+        dlg.show_tags_cb.setChecked(False)
+        dlg._save()
+        self.assertEqual(settings["source_font_size"], 16)
+        self.assertEqual(settings["target_font_size"], 18)
+        self.assertTrue(settings["auto_save_on_segment_change"])
+        self.assertFalse(settings["show_tag_placeholders"])
+        self.assertTrue(settings.saved)
+
+    def test_project_settings_dialog_add_remove_apply(self):
+        from unittest.mock import patch
+        from cat_tool.dialogs import ProjectSettingsDialog
+
+        class FakeProject:
+            name = "Old"
+            source_lang = "en"
+            target_lang = "es"
+            source_files = ["one.po"]
+
+        project = FakeProject()
+        dlg = ProjectSettingsDialog(project)
+        new_path = os.path.join(self.tmp.name, "two.po")
+        with patch(
+            "cat_tool.dialogs.project_dialogs.QFileDialog.getOpenFileName",
+            return_value=(new_path, ""),
+        ):
+            dlg.add_source_file()
+        self.assertEqual(project.source_files, ["one.po", new_path])
+        dlg.file_list.setCurrentRow(0)
+        dlg.remove_source_file()
+        self.assertEqual(project.source_files, [new_path])
+        dlg.name_edit.setText("New name")
+        dlg.apply()
+        self.assertEqual(project.name, "New name")
+
+    def test_tag_view_dialog_without_tags(self):
+        from cat_tool.dialogs import TagViewDialog
+        dlg = TagViewDialog({"all_tags": []}, 0)
+        self.assertEqual(dlg.tag_list.count(), 1)
+        self.assertFalse(
+            bool(dlg.tag_list.item(0).flags() & 0x20))  # ItemIsSelectable
+
+    def test_tag_view_dialog_inserts_placeholder(self):
+        from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QWidget
+        from cat_tool.formats.tag_utils import PH_L, PH_R
+        from cat_tool.dialogs import TagViewDialog
+
+        class FakeParent(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.current_segment_index = 0
+                self.table = QTableWidget(1, 2)
+                self.table.setItem(0, 1, QTableWidgetItem("Existing "))
+
+        parent = FakeParent()
+        dlg = TagViewDialog({"all_tags": ["<b>"]}, 1, parent)
+        dlg.tag_list.setCurrentRow(0)
+        dlg._insert_selected_tag()
+        self.assertEqual(parent.table.item(0, 1).text(),
+                         f"Existing {PH_L}0{PH_R}")
+
+    def test_chapter_view_copy_and_export(self):
+        from unittest.mock import patch
+        from cat_tool.dialogs import ChapterViewDialog
+        bookmarks = [
+            {"title": "Chapter One", "level": 0},
+            {"title": "Section", "level": 1},
+        ]
+        dlg = ChapterViewDialog(bookmarks)
+        dlg._copy_st_to_tt()
+        self.assertEqual(dlg.table.item(0, 1).text(), "Chapter One")
+        self.assertEqual(dlg.table.item(1, 1).text(), "Section")
+
+        path = os.path.join(self.tmp.name, "chapters.csv")
+        with patch(
+            "PyQt5.QtWidgets.QFileDialog.getSaveFileName",
+            return_value=(path, ""),
+        ), patch("PyQt5.QtWidgets.QMessageBox.information"):
+            dlg._export_csv()
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("ST,TT", content)
+        self.assertIn("Chapter One", content)
+
+    def test_chapter_view_without_bookmarks(self):
+        from cat_tool.dialogs import ChapterViewDialog
+        dlg = ChapterViewDialog([])
+        self.assertFalse(hasattr(dlg, "table"))
+
+    def test_spellcheck_dialog_without_dictionary(self):
+        from cat_tool.dialogs import SpellCheckDialog
+
+        class NoDictSpell:
+            loaded_names = []
+            has_dict = False
+
+        dlg = SpellCheckDialog([], NoDictSpell())
+        self.assertFalse(hasattr(dlg, "results"))
+
+    def test_spellcheck_dialog_reports_and_replaces_errors(self):
+        from cat_tool.dialogs import SpellCheckDialog
+
+        class FakeSpell:
+            loaded_names = ["en_US"]
+            has_dict = True
+
+            def check_text(self, text):
+                errors = []
+                if "helo" in text:
+                    errors.append(("helo", ["hello"]))
+                if "wrold" in text:
+                    errors.append(("wrold", ["world"]))
+                return errors
+
+        segments = [{"source": "Hello world", "target": "helo wrold",
+                     "source_clean": "Hello world",
+                     "target_clean": "helo wrold"}]
+        dlg = SpellCheckDialog(segments, FakeSpell())
+        self.assertEqual(len(dlg.results), 1)
+        self.assertEqual(dlg.list_widget.count(), 1)
+        dlg.list_widget.setCurrentRow(0)
+        self.assertIn("helo", dlg.detail_label.text())
+        self.assertFalse(dlg.suggestions_widget.isHidden())
+        dlg._replace_word("helo", "hello")
+        dlg._replace_word("wrold", "world")
+        self.assertEqual(segments[0]["target_clean"], "hello world")
+        self.assertEqual(dlg.results, [])
+        self.assertEqual(dlg.detail_label.text(), "All errors corrected!")
 
 
 if __name__ == "__main__":

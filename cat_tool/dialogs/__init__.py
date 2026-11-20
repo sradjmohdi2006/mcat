@@ -28,10 +28,21 @@ def fill_lang_combo(combo, selected_code=""):
     combo.clear()
     for code, name in LANGUAGES:
         combo.addItem(f"{name}  [{code}]", code)
-    if selected_code:
-        idx = combo.findData(selected_code)
+    if not selected_code:
+        return
+    # Accept regional variants such as en-US / pt-BR by falling back to
+    # the base language when the exact code is not in the list.
+    base = selected_code.replace("_", "-").split("-")[0]
+    candidates = [selected_code]
+    if base != selected_code:
+        candidates.append(base)
+    for candidate in candidates:
+        idx = combo.findData(candidate)
+        if idx < 0:
+            idx = combo.findData(candidate.lower())
         if idx >= 0:
             combo.setCurrentIndex(idx)
+            return
 
 
 FILE_FILTER = (
@@ -55,6 +66,7 @@ FILE_FILTER = (
 )
 
 from cat_tool.dialogs.glossary_dialogs import GlossaryDialog, LangDialog
+from cat_tool.dialogs.import_dialog import MultiFileImportDialog
 from cat_tool.dialogs.project_dialogs import NewProjectDialog, ProjectSettingsDialog
 from cat_tool.dialogs.view_dialogs import ShortcutsDialog, QADialog, TagViewDialog, ChapterViewDialog
 from cat_tool.dialogs.spellcheck_dialog import SpellCheckDialog
@@ -62,7 +74,8 @@ from cat_tool.dialogs.settings_dialog import SettingsDialog
 from cat_tool.dialogs.search_dialog import SearchDialog
 
 __all__ = [
-    "GlossaryDialog", "LangDialog", "NewProjectDialog", "ProjectSettingsDialog",
+    "GlossaryDialog", "LangDialog", "MultiFileImportDialog",
+    "NewProjectDialog", "ProjectSettingsDialog",
     "ShortcutsDialog", "QADialog", "SpellCheckDialog", "SettingsDialog", "TagViewDialog",
     "ChapterViewDialog", "SearchDialog",
     "LANGUAGES", "fill_lang_combo", "FILE_FILTER",

@@ -3,6 +3,8 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from cat_tool.tmx_utils import parse_tmx, parse_tbx, peek_tmx, peek_tbx
+
 class Glossary:
     def __init__(self, db_path="glossary.db"):
         self.db_path = db_path
@@ -86,75 +88,39 @@ class Glossary:
         return re.findall(r"\w+(?:'\w+)?", text.lower())
 
     def peek_tmx(self, file_path):
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"TMX file not found: {file_path}")
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+        """Summarise a TMX file, including whether it looks like a term list."""
+        return peek_tmx(file_path)
 
-        header = root.find("header")
-        srclang = header.get("srclang", "") if header is not None else ""
-
-        body = root.find("body")
-        if body is None:
-            return {"source_lang": srclang, "target_lang": "", "count": 0}
-
-        all_langs = set()
-        seen_langs = set()
-        tuv_count = 0
-        for tu in body.findall("tu"):
-            for tuv in tu.findall("tuv"):
-                lang = tuv.get(XML_LANG) or tuv.get("lang") or ""
-                seg = tuv.find("seg")
-                seg_text = seg.text.strip() if seg is not None and seg.text else ""
-                if seg_text:
-                    seen_langs.add(lang)
-                    tuv_count += 1
-
-        total_pairs = tuv_count // 2
-        target_langs = seen_langs - {srclang} if srclang else seen_langs
-        target_lang = next(iter(target_langs)) if len(target_langs) == 1 else ", ".join(sorted(target_langs)) if target_langs else ""
-        return {"source_lang": srclang, "target_lang": target_lang, "count": total_pairs}
-
-    def import_tmx(self, file_path, source_lang=None):
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"TMX file not found: {file_path}")
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
-
-        header = root.find("header")
-        if header is not None and source_lang is None:
-            source_lang = header.get("srclang", "en")
-        if source_lang is None:
-            source_lang = "en"
-
-        body = root.find("body")
-        if body is None:
-            return 0
-
+    def import_tmx(self, file_path, source_lang=None, target_lang=None):
+        """Import TMX translation units as glossary terms."""
+        units, _ = parse_tmx(file_path, source_lang=source_lang,
+                             target_lang=target_lang)
+        description = f"Imported from TMX: {os.path.basename(file_path)}"
         count = 0
-        for tu in body.findall("tu"):
-            tuvs = tu.findall("tuv")
-            source_text = None
-            target_text = None
-            target_lang = ""
-            for tuv in tuvs:
-                lang = tuv.get(XML_LANG) or tuv.get("lang") or ""
-                seg = tuv.find("seg")
-                seg_text = seg.text.strip() if seg is not None and seg.text else ""
-                if not seg_text:
-                    continue
-                if lang == source_lang:
-                    source_text = seg_text
-                elif target_text is None:
-                    target_text = seg_text
-                    target_lang = lang
-            if source_text and target_text:
-                self.add_term(source_text, target_text,
-                              f"Imported from TMX: {os.path.basename(file_path)}",
-                              source_lang=source_lang, target_lang=target_lang)
-                count += 1
+        for unit in units:
+            self.add_term(
+                unit["source"], unit["target"], description,
+                source_lang=unit["source_lang"], target_lang=unit["target_lang"])
+            count += 1
+        return count
+
+    def peek_tbx(self, file_path):
+        """Summarise a TBX term base for import dialogs."""
+        return peek_tbx(file_path)
+
+    def import_tbx(self, file_path, source_lang=None, target_lang=None):
+        """Import TBX terms into the glossary."""
+        terms, _ = parse_tbx(file_path, source_lang=source_lang,
+                             target_lang=target_lang)
+        description = f"Imported from TBX: {os.path.basename(file_path)}"
+        count = 0
+        for term in terms:
+            self.add_term(
+                term["source"], term["target"],
+                term.get("description") or description,
+                source_lang=term["source_lang"],
+                target_lang=term["target_lang"])
+            count += 1
         return count
 
     def export_tmx(self, file_path, source_lang=None, target_lang=None):
@@ -287,43 +253,22 @@ class Glossary:
         return len(terms)
 
     def import_collection_tmx(self, file_path, name=None):
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"TMX file not found: {file_path}")
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
-        header = root.find("header")
-        srclang = header.get("srclang", "en") if header is not None else "en"
-        body = root.find("body")
-        if body is None:
+        units, _ = parse_tmx(file_path)
+        if not units:
             return 0, None
         coll_name = name or os.path.splitext(os.path.basename(file_path))[0]
-        coll_id = self.create_collection(coll_name, f"Imported from {os.path.basename(file_path)}")
+        coll_id = self.create_collection(
+            coll_name, f"Imported from {os.path.basename(file_path)}")
         if coll_id is None:
             return 0, None
+        description = f"Imported from TMX: {os.path.basename(file_path)}"
         count = 0
-        for tu in body.findall("tu"):
-            tuvs = tu.findall("tuv")
-            source_text = None
-            target_text = None
-            target_lang = ""
-            for tuv in tuvs:
-                lang = tuv.get(XML_LANG) or tuv.get("lang") or ""
-                seg = tuv.find("seg")
-                seg_text = seg.text.strip() if seg is not None and seg.text else ""
-                if not seg_text:
-                    continue
-                if lang == srclang:
-                    source_text = seg_text
-                elif target_text is None:
-                    target_text = seg_text
-                    target_lang = lang
-            if source_text and target_text:
-                self.add_term(source_text, target_text,
-                              f"Imported from TMX: {os.path.basename(file_path)}",
-                              source_lang=srclang, target_lang=target_lang)
-                self.add_term_to_collection(coll_id, source_text)
-                count += 1
+        for unit in units:
+            self.add_term(
+                unit["source"], unit["target"], description,
+                source_lang=unit["source_lang"], target_lang=unit["target_lang"])
+            self.add_term_to_collection(coll_id, unit["source"])
+            count += 1
         return count, coll_id
 
     def check_segment(self, text, source_lang=None, target_lang=None):

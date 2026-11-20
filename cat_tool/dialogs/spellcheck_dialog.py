@@ -1,14 +1,17 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLabel, QListWidget, QListWidgetItem, QWidget,
                              QFileDialog, QMessageBox)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
 
 class SpellCheckDialog(QDialog):
-    def __init__(self, segments, spellchecker, parent=None):
+    correction_made = pyqtSignal(str, str, str)  # source, previous target, new target
+
+    def __init__(self, segments, spellchecker, parent=None, results=None):
         super().__init__(parent)
         self.segments = segments
         self.spellchecker = spellchecker
+        self._provided_results = results
         self.setWindowTitle("Spell Check")
         self.setMinimumSize(700, 450)
         self.init_ui()
@@ -31,15 +34,7 @@ class SpellCheckDialog(QDialog):
             layout.addWidget(close_btn)
             return
 
-        self.results = []
-        for idx, seg in enumerate(self.segments):
-            target = seg.get("target_clean", seg.get("target", ""))
-            if not target:
-                continue
-            errors = self.spellchecker.check_text(target)
-            if errors:
-                self.results.append((idx, seg, errors))
-
+        self.results = self._build_results()
         status_label = QLabel(f"Found errors in {len(self.results)} of {len(self.segments)} segments")
         layout.addWidget(status_label)
 
@@ -67,6 +62,23 @@ class SpellCheckDialog(QDialog):
         layout.addLayout(btn_layout)
 
         self._populate()
+
+    def _build_results(self):
+        if self._provided_results is not None:
+            return [
+                (idx, self.segments[idx], errors)
+                for idx, errors in self._provided_results
+                if 0 <= idx < len(self.segments)
+            ]
+        results = []
+        for idx, seg in enumerate(self.segments):
+            target = seg.get("target_clean", seg.get("target", ""))
+            if not target:
+                continue
+            errors = self.spellchecker.check_text(target)
+            if errors:
+                results.append((idx, seg, errors))
+        return results
 
     def _populate(self):
         self.list_widget.blockSignals(True)
@@ -136,6 +148,7 @@ class SpellCheckDialog(QDialog):
             seg["target_clean"] = new_target
         else:
             seg["target"] = new_target
+        self.correction_made.emit(seg.get("source", ""), target, new_target)
         new_errors = self.spellchecker.check_text(new_target)
         new_errors = [e for e in new_errors if e[0] != old]
         if new_errors:

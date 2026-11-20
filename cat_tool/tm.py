@@ -6,6 +6,8 @@ from datetime import datetime
 from rapidfuzz import fuzz
 import numpy as np
 
+from cat_tool.tmx_utils import parse_tmx
+
 
 def _load_vec_extension(conn):
     conn.enable_load_extension(True)
@@ -115,6 +117,22 @@ class TranslationMemory:
             return None
         finally:
             conn.close()
+
+    def import_tmx(self, file_path, source_lang=None, target_lang=None):
+        """Import TMX translation units into the translation memory.
+
+        Returns the number of translation units written.
+        """
+        units, _ = parse_tmx(file_path, source_lang=source_lang,
+                             target_lang=target_lang)
+        count = 0
+        for unit in units:
+            if unit["source"] and unit["target"]:
+                self.add_translation(
+                    unit["source"], unit["target"],
+                    unit["source_lang"], unit["target_lang"])
+                count += 1
+        return count
 
     def _add_embedding_for_row(self, source, row_id):
         emb = self._compute_embedding(source)

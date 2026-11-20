@@ -50,17 +50,21 @@ class GlossaryDialog(QDialog):
 
 
 class LangDialog(QDialog):
-    def __init__(self, sl, tl, count, parent=None):
+    def __init__(self, sl, tl, count, parent=None, format_name="TMX",
+                 item_label="term pairs"):
         super().__init__(parent)
-        self.setWindowTitle("TMX Language Detection")
+        self.setWindowTitle(f"{format_name} Language Detection")
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Found <b>{count}</b> term pairs in TMX."))
+        layout.addWidget(QLabel(f"Found <b>{count}</b> {item_label} in {format_name}."))
         layout.addWidget(QLabel("Detected languages:"))
         f = QFormLayout()
         self.src_combo = QComboBox()
         fill_lang_combo(self.src_combo, sl)
         self.tgt_combo = QComboBox()
         fill_lang_combo(self.tgt_combo, tl)
+        if not tl:
+            self.tgt_combo.insertItem(0, "Auto-detect from file", "")
+            self.tgt_combo.setCurrentIndex(0)
         f.addRow("Source:", self.src_combo)
         f.addRow("Target:", self.tgt_combo)
         layout.addLayout(f)
